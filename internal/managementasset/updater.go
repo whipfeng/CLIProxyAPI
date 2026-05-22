@@ -250,6 +250,12 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			return nil, nil
 		}
 
+		// Preserve local custom builds when the file already exists.
+		if localHash != "" {
+			log.Debug("management asset exists locally with a different hash, preserving local version")
+			return nil, nil
+		}
+
 		data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
 		if err != nil {
 			if localFileMissing {

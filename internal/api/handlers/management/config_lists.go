@@ -3,7 +3,10 @@ package management
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -1124,6 +1127,292 @@ func normalizeCodexKey(entry *config.CodexKey) {
 		normalized = append(normalized, model)
 	}
 	entry.Models = normalized
+}
+
+// trae-api-key: []TraeKey
+func (h *Handler) GetTraeKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"trae-api-key": h.cfg.TraeKey})
+}
+func (h *Handler) PutTraeKeys(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.TraeKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.TraeKey `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	for i := range arr {
+		normalizeTraeKey(&arr[i])
+	}
+	h.cfg.TraeKey = arr
+	h.cfg.SanitizeTraeKeys()
+	h.persist(c)
+}
+func (h *Handler) PatchTraeKey(c *gin.Context) {
+	type traeKeyPatch struct {
+		APIKey         *string             `json:"api-key"`
+		Prefix         *string             `json:"prefix"`
+		BaseURL        *string             `json:"base-url"`
+		ProxyURL       *string             `json:"proxy-url"`
+		Models         *[]config.TraeModel `json:"models"`
+		Headers        *map[string]string  `json:"headers"`
+		ExcludedModels *[]string           `json:"excluded-models"`
+	}
+	var body struct {
+		Index *int          `json:"index"`
+		Match *string       `json:"match"`
+		Value *traeKeyPatch `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	targetIndex := -1
+	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.TraeKey) {
+		targetIndex = *body.Index
+	}
+	if targetIndex == -1 && body.Match != nil {
+		match := strings.TrimSpace(*body.Match)
+		for i := range h.cfg.TraeKey {
+			if h.cfg.TraeKey[i].APIKey == match {
+				targetIndex = i
+				break
+			}
+		}
+	}
+	if targetIndex == -1 {
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+
+	entry := h.cfg.TraeKey[targetIndex]
+	if body.Value.APIKey != nil {
+		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+	}
+	if body.Value.Prefix != nil {
+		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.BaseURL != nil {
+		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
+	}
+	if body.Value.ProxyURL != nil {
+		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+	}
+	if body.Value.Models != nil {
+		entry.Models = append([]config.TraeModel(nil), (*body.Value.Models)...)
+	}
+	if body.Value.Headers != nil {
+		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+	}
+	if body.Value.ExcludedModels != nil {
+		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	normalizeTraeKey(&entry)
+	h.cfg.TraeKey[targetIndex] = entry
+	h.cfg.SanitizeTraeKeys()
+	h.persist(c)
+}
+func (h *Handler) DeleteTraeKey(c *gin.Context) {
+	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
+			base := strings.TrimSpace(baseRaw)
+			out := make([]config.TraeKey, 0, len(h.cfg.TraeKey))
+			for _, v := range h.cfg.TraeKey {
+				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+					continue
+				}
+				out = append(out, v)
+			}
+			h.cfg.TraeKey = out
+			h.cfg.SanitizeTraeKeys()
+			h.persist(c)
+			return
+		}
+
+		matchIndex := -1
+		matchCount := 0
+		for i := range h.cfg.TraeKey {
+			if strings.TrimSpace(h.cfg.TraeKey[i].APIKey) == val {
+				matchCount++
+				if matchIndex == -1 {
+					matchIndex = i
+				}
+			}
+		}
+		if matchCount > 1 {
+			c.JSON(400, gin.H{"error": "multiple items match api-key; base-url is required"})
+			return
+		}
+		if matchIndex != -1 {
+			h.cfg.TraeKey = append(h.cfg.TraeKey[:matchIndex], h.cfg.TraeKey[matchIndex+1:]...)
+		}
+		h.cfg.SanitizeTraeKeys()
+		h.persist(c)
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		_, err := fmt.Sscanf(idxStr, "%d", &idx)
+		if err == nil && idx >= 0 && idx < len(h.cfg.TraeKey) {
+			h.cfg.TraeKey = append(h.cfg.TraeKey[:idx], h.cfg.TraeKey[idx+1:]...)
+			h.cfg.SanitizeTraeKeys()
+			h.persist(c)
+			return
+		}
+	}
+	c.JSON(400, gin.H{"error": "missing api-key or index"})
+}
+
+func normalizeTraeKey(entry *config.TraeKey) {
+	if entry == nil {
+		return
+	}
+	entry.APIKey = strings.TrimSpace(entry.APIKey)
+	entry.Prefix = strings.TrimSpace(entry.Prefix)
+	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+	entry.Headers = config.NormalizeHeaders(entry.Headers)
+	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
+	if len(entry.Models) == 0 {
+		return
+	}
+	normalized := make([]config.TraeModel, 0, len(entry.Models))
+	for i := range entry.Models {
+		model := entry.Models[i]
+		model.Name = strings.TrimSpace(model.Name)
+		model.ConfigName = strings.TrimSpace(model.ConfigName)
+		model.ModelName = strings.TrimSpace(model.ModelName)
+		if model.Name == "" && model.ModelName == "" {
+			continue
+		}
+		normalized = append(normalized, model)
+	}
+	entry.Models = normalized
+}
+
+// TestTraeKey sends a lightweight request to Trae Gateway to validate credentials.
+func (h *Handler) TestTraeKey(c *gin.Context) {
+	var body struct {
+		BaseURL    string `json:"baseUrl"`
+		APIKey     string `json:"apiKey"`
+		ConfigName string `json:"configName"`
+		ModelName  string `json:"modelName"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+
+	baseURL := strings.TrimSpace(body.BaseURL)
+	if baseURL == "" {
+		baseURL = "https://console.enterprise.trae.cn"
+	}
+	apiKey := strings.TrimSpace(body.APIKey)
+	if apiKey == "" {
+		c.JSON(400, gin.H{"error": "api key is required"})
+		return
+	}
+
+	configName := strings.TrimSpace(body.ConfigName)
+	if configName == "" {
+		c.JSON(400, gin.H{"error": "config name is required"})
+		return
+	}
+	modelName := strings.TrimSpace(body.ModelName)
+	if modelName == "" {
+		c.JSON(400, gin.H{"error": "model name is required"})
+		return
+	}
+
+	payload := map[string]interface{}{
+		"config_name":     configName,
+		"conversation_id": fmt.Sprintf("test-%d", time.Now().UnixNano()),
+		"model_name":      modelName,
+		"session_id":      fmt.Sprintf("test-%d", time.Now().UnixNano()),
+		"messages": []map[string]interface{}{
+			{"role": "user", "content": []map[string]string{{"type": "text", "text": "Hi"}}},
+		},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to build request"})
+		return
+	}
+
+	url := strings.TrimRight(baseURL, "/") + "/api/ide/v2/llm_raw_chat"
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, strings.NewReader(string(encoded)))
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to create request"})
+		return
+	}
+	req.Header.Set("Authorization", "Cloud-IDE-JWT "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("X-App-Id", "7b3f9dc2-8a4e-5c6d-2f1b-9e4a3c5b7df0")
+	req.Header.Set("X-Ide-Function", "chat")
+	req.Header.Set("X-Ide-Version", "99.99.99")
+	req.Header.Set("X-Ide-Version-Code", "20260206")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(200, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		c.JSON(200, gin.H{"success": false, "message": fmt.Sprintf("gateway returned %d: %s", resp.StatusCode, string(bodyBytes))})
+		return
+	}
+
+	// Read first few chunks of the SSE stream to detect model errors
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	bodyStr := string(bodyBytes)
+
+	// Check for common error patterns in the response
+	lowerBody := strings.ToLower(bodyStr)
+	if strings.Contains(lowerBody, `"error"`) || strings.Contains(lowerBody, `"err"`) ||
+		strings.Contains(lowerBody, `invalid`) ||
+		strings.Contains(lowerBody, `not found`) || strings.Contains(lowerBody, `not exist`) ||
+		strings.Contains(lowerBody, `unauthorized`) || strings.Contains(lowerBody, `forbidden`) ||
+		strings.Contains(lowerBody, `bad request`) || strings.Contains(lowerBody, `unknown model`) ||
+		strings.Contains(lowerBody, `model not`) || strings.Contains(lowerBody, `unsupported`) ||
+		strings.Contains(lowerBody, `"code":`) {
+		// Extract the first data line for error details
+		lines := strings.Split(bodyStr, "\n")
+		var detail string
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				detail = strings.TrimPrefix(line, "data:")
+				detail = strings.TrimSpace(detail)
+				if detail != "" && detail != "[DONE]" {
+					break
+				}
+			}
+		}
+		if detail == "" {
+			detail = bodyStr
+		}
+		if len(detail) > 256 {
+			detail = detail[:256] + "..."
+		}
+		c.JSON(200, gin.H{"success": false, "message": fmt.Sprintf("model rejected by gateway: %s", detail)})
+		return
+	}
+
+	c.JSON(200, gin.H{"success": true, "message": "connection successful"})
 }
 
 func normalizeVertexCompatKey(entry *config.VertexCompatKey) {

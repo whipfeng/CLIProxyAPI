@@ -120,6 +120,7 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		t.mu.Lock()
 		if cached, ok := t.connections[hostname]; ok && cached == h2Conn {
 			delete(t.connections, hostname)
+			cached.Close()
 		}
 		t.mu.Unlock()
 		return nil, err
@@ -149,9 +150,19 @@ func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	return f.fallback.RoundTrip(req)
 }
 
+// clientCache stores reusable http.Client instances keyed by proxy configuration.
+// This avoids creating new transports per request, enabling connection reuse.
+var clientCache sync.Map
+
+type clientCacheKey struct {
+	proxyURL string
+	timeout  time.Duration
+}
+
 // NewUtlsHTTPClient creates an HTTP client using utls Chrome TLS fingerprint.
 // Use this for Claude API requests to match real Claude Code's TLS behavior.
 // Falls back to standard transport for non-HTTPS requests.
+// Clients are cached per proxyURL to enable connection reuse.
 func NewUtlsHTTPClient(cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	var proxyURL string
 	if auth != nil {
@@ -161,13 +172,21 @@ func NewUtlsHTTPClient(cfg *config.Config, auth *cliproxyauth.Auth, timeout time
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
 
+	key := clientCacheKey{proxyURL: proxyURL, timeout: timeout}
+	if cached, ok := clientCache.Load(key); ok {
+		return cached.(*http.Client)
+	}
+
 	utlsRT := newUtlsRoundTripper(proxyURL)
 
-	var standardTransport http.RoundTripper = &http.Transport{
+	standardTransport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
+		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
 	}
 	if proxyURL != "" {
 		if transport := buildProxyTransport(proxyURL); transport != nil {
@@ -184,5 +203,6 @@ func NewUtlsHTTPClient(cfg *config.Config, auth *cliproxyauth.Auth, timeout time
 	if timeout > 0 {
 		client.Timeout = timeout
 	}
+	clientCache.Store(key, client)
 	return client
 }

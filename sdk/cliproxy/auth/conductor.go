@@ -2073,8 +2073,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							if disableCooling {
 								state.NextRetryAfter = time.Time{}
 							} else {
-								next := now.Add(1 * time.Minute)
-								state.NextRetryAfter = next
+								state.NextRetryAfter = now.Add(15 * time.Second)
 							}
 						default:
 							state.NextRetryAfter = time.Time{}

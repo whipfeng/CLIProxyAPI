@@ -71,6 +71,22 @@ func ComputeCodexModelsHash(models []config.CodexModel) string {
 	return hashJoined(keys)
 }
 
+// ComputeTraeModelsHash returns a stable hash for Trae model identifiers.
+func ComputeTraeModelsHash(models []config.TraeModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			configName := strings.TrimSpace(model.ConfigName)
+			modelName := strings.TrimSpace(model.ModelName)
+			if name == "" && modelName == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(configName) + "|" + strings.ToLower(modelName))
+		}
+	})
+	return hashJoined(keys)
+}
+
 // ComputeGeminiModelsHash returns a stable hash for Gemini model aliases.
 func ComputeGeminiModelsHash(models []config.GeminiModel) string {
 	keys := normalizeModelPairs(func(out func(key string)) {

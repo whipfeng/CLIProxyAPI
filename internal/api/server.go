@@ -606,6 +606,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/codex-api-key", s.mgmt.PatchCodexKey)
 		mgmt.DELETE("/codex-api-key", s.mgmt.DeleteCodexKey)
 
+		mgmt.GET("/trae-api-key", s.mgmt.GetTraeKeys)
+		mgmt.PUT("/trae-api-key", s.mgmt.PutTraeKeys)
+		mgmt.PATCH("/trae-api-key", s.mgmt.PatchTraeKey)
+		mgmt.DELETE("/trae-api-key", s.mgmt.DeleteTraeKey)
+		mgmt.POST("/trae-api-key/test", s.mgmt.TestTraeKey)
+
 		mgmt.GET("/openai-compatibility", s.mgmt.GetOpenAICompat)
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
 		mgmt.PATCH("/openai-compatibility", s.mgmt.PatchOpenAICompat)

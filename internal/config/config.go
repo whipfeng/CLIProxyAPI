@@ -106,6 +106,9 @@ type Config struct {
 	// These are used only when the client does not send its own headers.
 	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
 
+	// TraeKey defines a list of Trae Gateway API key configurations.
+	TraeKey []TraeKey `yaml:"trae-api-key" json:"trae-api-key"`
+
 	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
 	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`
 
@@ -404,6 +407,52 @@ type ClaudeKey struct {
 func (k ClaudeKey) GetAPIKey() string  { return k.APIKey }
 func (k ClaudeKey) GetBaseURL() string { return k.BaseURL }
 
+// TraeKey represents the configuration for a Trae Gateway API key.
+type TraeKey struct {
+	// APIKey is the Trae Gateway JWT token.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Priority controls selection preference when multiple credentials match.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the Trae Gateway host URL.
+	// If empty, defaults to https://console.enterprise.trae.cn.
+	BaseURL string `yaml:"base-url" json:"base-url"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
+
+	// Models defines upstream model names and aliases for request routing.
+	Models []TraeModel `yaml:"models" json:"models"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+}
+
+func (k TraeKey) GetAPIKey() string  { return k.APIKey }
+func (k TraeKey) GetBaseURL() string { return k.BaseURL }
+
+// TraeModel describes a mapping between a client-facing model name and Trae Gateway identifiers.
+type TraeModel struct {
+	// Name is the client-facing model name.
+	Name string `yaml:"name" json:"name"`
+
+	// ConfigName is the Trae Gateway config name.
+	ConfigName string `yaml:"config-name" json:"config-name"`
+
+	// ModelName is the Trae Gateway upstream model name.
+	ModelName string `yaml:"model-name" json:"model-name"`
+}
+
+func (m TraeModel) GetName() string  { return m.ModelName }
+func (m TraeModel) GetAlias() string { return m.Name }
+
 // ClaudeModel describes a mapping between an alias and the actual upstream model name.
 type ClaudeModel struct {
 	// Name is the upstream model identifier used when issuing requests.
@@ -686,6 +735,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()
 
+	// Sanitize Trae keys
+	cfg.SanitizeTraeKeys()
+
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
 
@@ -832,6 +884,19 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 		}
 	}
 	cfg.OAuthModelAlias = out
+}
+
+// SanitizeTraeKeys normalizes headers and excluded models for Trae credentials.
+func (cfg *Config) SanitizeTraeKeys() {
+	if cfg == nil || len(cfg.TraeKey) == 0 {
+		return
+	}
+	for i := range cfg.TraeKey {
+		entry := &cfg.TraeKey[i]
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+	}
 }
 
 // SanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are

@@ -273,7 +273,15 @@ func (s *authScheduler) pickSingle(ctx context.Context, provider, model string, 
 	if picked := shard.pickReadyLocked(preferWebsocket, s.strategy, predicate); picked != nil {
 		return picked, nil
 	}
-	return nil, shard.unavailableErrorLocked(provider, model, predicate)
+	return nil, shard.unavailableErrorLocked(provider, model, func(entry *scheduledAuth) bool {
+		if entry == nil || entry.auth == nil {
+			return false
+		}
+		if pinnedAuthID != "" && entry.auth.ID != pinnedAuthID {
+			return false
+		}
+		return true
+	})
 }
 
 // pickMixed returns the next auth and provider for a mixed-provider request.

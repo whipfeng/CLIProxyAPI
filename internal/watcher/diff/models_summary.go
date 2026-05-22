@@ -29,6 +29,11 @@ type VertexModelsSummary struct {
 	count int
 }
 
+type TraeModelsSummary struct {
+	hash  string
+	count int
+}
+
 // SummarizeGeminiModels hashes Gemini model aliases for change detection.
 func SummarizeGeminiModels(models []config.GeminiModel) GeminiModelsSummary {
 	if len(models) == 0 {
@@ -117,5 +122,27 @@ func SummarizeVertexModels(models []config.VertexCompatModel) VertexModelsSummar
 	return VertexModelsSummary{
 		hash:  hex.EncodeToString(sum[:]),
 		count: len(names),
+	}
+}
+
+// SummarizeTraeModels hashes Trae model identifiers for change detection.
+func SummarizeTraeModels(models []config.TraeModel) TraeModelsSummary {
+	if len(models) == 0 {
+		return TraeModelsSummary{}
+	}
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			configName := strings.TrimSpace(model.ConfigName)
+			modelName := strings.TrimSpace(model.ModelName)
+			if name == "" && modelName == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(configName) + "|" + strings.ToLower(modelName))
+		}
+	})
+	return TraeModelsSummary{
+		hash:  hashJoined(keys),
+		count: len(keys),
 	}
 }
