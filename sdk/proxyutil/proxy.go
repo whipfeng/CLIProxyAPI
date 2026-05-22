@@ -2,6 +2,7 @@ package proxyutil
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -70,9 +71,22 @@ func Parse(raw string) (Setting, error) {
 
 func cloneDefaultTransport() *http.Transport {
 	if transport, ok := http.DefaultTransport.(*http.Transport); ok && transport != nil {
-		return transport.Clone()
+		transport = transport.Clone()
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		}
+		transport.TLSClientConfig.InsecureSkipVerify = true
+		transport.TLSClientConfig.MaxVersion = tls.VersionTLS12
+
+		return transport
 	}
-	return &http.Transport{}
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		MaxVersion:         tls.VersionTLS12,
+	}
+	return &http.Transport{
+		TLSClientConfig: tlsConfig,
+	}
 }
 
 // NewDirectTransport returns a transport that bypasses environment proxies.
