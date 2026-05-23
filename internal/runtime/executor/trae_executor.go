@@ -6,13 +6,16 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,13 +112,33 @@ func traeCacheKey(body traeGatewayRequestBody) string {
 }
 
 var (
-	traeLogFile   *os.File
-	traeLogMu     sync.Mutex
-	traeLogPath   = `C:\Users\Docker\Desktop\Workspace\proxy-ai-model\logs\trae_debug.log`
+	traeLogFile  *os.File
+	traeLogMu    sync.Mutex
+	traeTransport = &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	}
 )
 
 func init() {
-	os.MkdirAll(`C:\Users\Docker\Desktop\Workspace\proxy-ai-model\logs`, 0755)
+	traeLogPath := strings.TrimSpace(os.Getenv("TRAE_DEBUG_LOG"))
+	if traeLogPath == "" {
+		return
+	}
+	dir := filepath.Dir(traeLogPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
 	f, err := os.OpenFile(traeLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
 		traeLogFile = f
@@ -239,18 +262,14 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 	reporter.EnsurePublished(ctx)
 
-	var finalText string
-	if reasoningContent.Len() > 0 {
-		finalText = reasoningContent.String() + content.String()
-	} else {
-		finalText = content.String()
-	}
-
 	now := time.Now().Unix()
 	if isAnthropic {
 		var anthropicContent []traeAnthropicContentBlock
-		if finalText != "" {
-			anthropicContent = append(anthropicContent, traeAnthropicContentBlock{Type: "text", Text: finalText})
+		if reasoningContent.Len() > 0 {
+			anthropicContent = append(anthropicContent, traeAnthropicContentBlock{Type: "thinking", Thinking: reasoningContent.String(), Signature: ""})
+		}
+		if content.Len() > 0 {
+			anthropicContent = append(anthropicContent, traeAnthropicContentBlock{Type: "text", Text: content.String()})
 		}
 		for _, call := range toolCalls {
 			fn := call.function()
@@ -290,7 +309,7 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			},
 		}
 	}
-	message := traeOpenAIMessage{Role: "assistant", Content: finalText}
+	message := traeOpenAIMessage{Role: "assistant", Content: content.String(), ReasoningContent: reasoningContent.String()}
 	if len(openAIToolCalls) > 0 {
 		message.ToolCalls = openAIToolCalls
 	}
@@ -355,69 +374,140 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		}
 		created := time.Now().Unix()
 
-			var (
-				anthropicStarted      bool
-				textBlockStarted      bool
-				textBlockStopped      bool
-				nextBlockIndex        int
-				hasToolCalls          bool
-				gatewayFinishReason   string
-				openAIToolCallSent    = make(map[int]bool)
-				anthropicToolBlockIdx = make(map[int]int)
-				anthropicToolStopped  = make(map[int]bool)
-			)
+		var (
+			anthropicStarted      bool
+			thinkingBlockStarted  bool
+			thinkingBlockStopped  bool
+			thinkingBlockIndex    int
+			textBlockStarted      bool
+			textBlockStopped      bool
+			textBlockIndex        int
+			nextBlockIndex        int
+			hasToolCalls          bool
+			gatewayFinishReason   string
+			openAIToolCallSent    = make(map[int]bool)
+			anthropicToolBlockIdx = make(map[int]int)
+			anthropicToolStopped  = make(map[int]bool)
+		)
 
 		_, err := e.runTraeGateway(ctx, gatewayHost, token, gatewayReq, func(event gatewayStreamEvent) error {
-				traeLogf("[GatewayEvent] text=%q reasoning=%q tool_calls=%d finish_reason=%q", event.Text, event.ReasoningContent, len(event.ToolCalls), event.FinishReason)
+			traeLogf("[GatewayEvent] text=%q reasoning=%q tool_calls=%d finish_reason=%q", event.Text, event.ReasoningContent, len(event.ToolCalls), event.FinishReason)
 			if event.Usage != nil {
 				tokenUsage = event.Usage
 				return nil
 			}
-				if event.FinishReason != "" {
-					gatewayFinishReason = event.FinishReason
-				}
+			if event.FinishReason != "" {
+				gatewayFinishReason = event.FinishReason
+			}
 			if event.Text == "" && event.ReasoningContent == "" && len(event.ToolCalls) == 0 {
 				return nil
 			}
 
 			if isAnthropic {
+				// Claude SSE chunks must be prefixed with "event: <type>\ndata: <json>\n\n".
+				// The Claude handler forwards chunks raw; without framing the client
+				// cannot parse individual events and buffers everything until stream close.
+				sendChunk := func(eventType string, payload []byte) {
+					chunks <- cliproxyexecutor.StreamChunk{Payload: traeAnthropicSSEChunk(eventType, payload)}
+				}
+
 				if !anthropicStarted {
 					anthropicStarted = true
 					payload, _ := json.Marshal(map[string]any{
 						"type":    "message_start",
 						"message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}},
 					})
-					chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+					sendChunk("message_start", payload)
 				}
 
-				if event.ReasoningContent != "" || event.Text != "" {
+				// Reasoning content -> thinking block (separate from text)
+				if event.ReasoningContent != "" {
+					if !thinkingBlockStarted {
+						thinkingBlockStarted = true
+						thinkingBlockIndex = nextBlockIndex
+						nextBlockIndex++
+						payload, _ := json.Marshal(map[string]any{
+							"type":  "content_block_start",
+							"index": thinkingBlockIndex,
+							"content_block": map[string]any{
+								"type":      "thinking",
+								"thinking":  event.ReasoningContent,
+								"signature": "",
+							},
+						})
+						sendChunk("content_block_start", payload)
+					} else {
+						payload, _ := json.Marshal(map[string]any{
+							"type":  "content_block_delta",
+							"index": thinkingBlockIndex,
+							"delta": map[string]any{"type": "thinking_delta", "thinking": event.ReasoningContent},
+						})
+						sendChunk("content_block_delta", payload)
+					}
+				}
+
+				// Text content -> text block (after thinking block stops)
+				if event.Text != "" {
+					if !anthropicStarted {
+						anthropicStarted = true
+						payload, _ := json.Marshal(map[string]any{
+							"type":    "message_start",
+							"message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}},
+						})
+						sendChunk("message_start", payload)
+					}
+					if thinkingBlockStarted && !thinkingBlockStopped {
+						thinkingBlockStopped = true
+						payload, _ := json.Marshal(map[string]any{
+							"type":  "content_block_stop",
+							"index": thinkingBlockIndex,
+						})
+						sendChunk("content_block_stop", payload)
+					}
 					if !textBlockStarted {
 						textBlockStarted = true
+						textBlockIndex = nextBlockIndex
 						payload, _ := json.Marshal(map[string]any{
 							"type":          "content_block_start",
-							"index":         nextBlockIndex,
+							"index":         textBlockIndex,
 							"content_block": map[string]any{"type": "text", "text": ""},
 						})
-						chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+						sendChunk("content_block_start", payload)
 						nextBlockIndex++
 					}
 					payload, _ := json.Marshal(map[string]any{
 						"type":  "content_block_delta",
-						"index": nextBlockIndex - 1,
-						"delta": map[string]any{"type": "text_delta", "text": event.ReasoningContent + event.Text},
+						"index": textBlockIndex,
+						"delta": map[string]any{"type": "text_delta", "text": event.Text},
 					})
-					chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+					sendChunk("content_block_delta", payload)
 				}
 
 				if len(event.ToolCalls) > 0 {
 					hasToolCalls = true
+					if !anthropicStarted {
+						anthropicStarted = true
+						payload, _ := json.Marshal(map[string]any{
+							"type":    "message_start",
+							"message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}},
+						})
+						sendChunk("message_start", payload)
+					}
+					if thinkingBlockStarted && !thinkingBlockStopped {
+						thinkingBlockStopped = true
+						payload, _ := json.Marshal(map[string]any{
+							"type":  "content_block_stop",
+							"index": thinkingBlockIndex,
+						})
+						sendChunk("content_block_stop", payload)
+					}
 					if textBlockStarted && !textBlockStopped {
 						textBlockStopped = true
 						payload, _ := json.Marshal(map[string]any{
 							"type":  "content_block_stop",
-							"index": nextBlockIndex - 1,
+							"index": textBlockIndex,
 						})
-						chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+						sendChunk("content_block_stop", payload)
 					}
 					for _, call := range event.ToolCalls {
 						fn := call.function()
@@ -430,13 +520,13 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 								"type":  "content_block_start",
 								"index": blockIdx,
 								"content_block": map[string]any{
-									"type": "tool_use",
-									"id":   call.ID,
-									"name": fn.Name,
+									"type":  "tool_use",
+									"id":    call.ID,
+									"name":  fn.Name,
 									"input": map[string]any{},
 								},
 							})
-							chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+							sendChunk("content_block_start", payload)
 						}
 						if fn.Arguments != "" {
 							payload, _ := json.Marshal(map[string]any{
@@ -447,12 +537,12 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 									"partial_json": fn.Arguments,
 								},
 							})
-							chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+							sendChunk("content_block_delta", payload)
 						}
 					}
 				}
 			} else {
-				if event.ReasoningContent != "" || event.Text != "" {
+				if event.ReasoningContent != "" {
 					payload, _ := json.Marshal(traeOpenAIStreamChunk{
 						ID:      id,
 						Object:  "chat.completion.chunk",
@@ -460,18 +550,54 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 						Model:   req.Model,
 						Choices: []traeOpenAIStreamChoice{{
 							Index: 0,
-							Delta: traeOpenAIStreamDelta{Content: event.ReasoningContent + event.Text},
+							Delta: traeOpenAIStreamDelta{ReasoningContent: event.ReasoningContent},
+						}},
+					})
+					chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+				}
+				if event.Text != "" {
+					payload, _ := json.Marshal(traeOpenAIStreamChunk{
+						ID:      id,
+						Object:  "chat.completion.chunk",
+						Created: created,
+						Model:   req.Model,
+						Choices: []traeOpenAIStreamChoice{{
+							Index: 0,
+							Delta: traeOpenAIStreamDelta{Content: event.Text},
 						}},
 					})
 					chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
 				}
 
-					if len(event.ToolCalls) > 0 {
-						hasToolCalls = true
-						for _, call := range event.ToolCalls {
-							fn := call.function()
-							if !openAIToolCallSent[call.Index] {
-								openAIToolCallSent[call.Index] = true
+				if len(event.ToolCalls) > 0 {
+					hasToolCalls = true
+					for _, call := range event.ToolCalls {
+						fn := call.function()
+						if !openAIToolCallSent[call.Index] {
+							openAIToolCallSent[call.Index] = true
+							payload, _ := json.Marshal(traeOpenAIStreamChunk{
+								ID:      id,
+								Object:  "chat.completion.chunk",
+								Created: created,
+								Model:   req.Model,
+								Choices: []traeOpenAIStreamChoice{{
+									Index: 0,
+									Delta: traeOpenAIStreamDelta{
+										ToolCalls: []traeOpenAIToolCall{{
+											Index: call.Index,
+											ID:    call.ID,
+											Type:  call.Type,
+											Function: traeOpenAIToolCallFunc{
+												Name:      fn.Name,
+												Arguments: fn.Arguments,
+											},
+										}},
+									},
+								}},
+							})
+							chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+						} else {
+							if fn.Arguments != "" {
 								payload, _ := json.Marshal(traeOpenAIStreamChunk{
 									ID:      id,
 									Object:  "chat.completion.chunk",
@@ -482,10 +608,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 										Delta: traeOpenAIStreamDelta{
 											ToolCalls: []traeOpenAIToolCall{{
 												Index: call.Index,
-												ID:    call.ID,
-												Type:  call.Type,
 												Function: traeOpenAIToolCallFunc{
-													Name:      fn.Name,
 													Arguments: fn.Arguments,
 												},
 											}},
@@ -493,30 +616,10 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 									}},
 								})
 								chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
-							} else {
-								if fn.Arguments != "" {
-									payload, _ := json.Marshal(traeOpenAIStreamChunk{
-										ID:      id,
-										Object:  "chat.completion.chunk",
-										Created: created,
-										Model:   req.Model,
-										Choices: []traeOpenAIStreamChoice{{
-											Index: 0,
-											Delta: traeOpenAIStreamDelta{
-												ToolCalls: []traeOpenAIToolCall{{
-													Index: call.Index,
-													Function: traeOpenAIToolCallFunc{
-														Arguments: fn.Arguments,
-													},
-												}},
-											},
-										}},
-									})
-									chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
-								}
 							}
 						}
 					}
+				}
 			}
 			return nil
 		})
@@ -532,15 +635,19 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 		if isAnthropic {
 			if anthropicStarted {
+				if thinkingBlockStarted && !thinkingBlockStopped {
+					payload, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": thinkingBlockIndex})
+					chunks <- cliproxyexecutor.StreamChunk{Payload: traeAnthropicSSEChunk("content_block_stop", payload)}
+				}
 				if textBlockStarted && !textBlockStopped {
-					payload, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": nextBlockIndex - 1})
-					chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+					payload, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": textBlockIndex})
+					chunks <- cliproxyexecutor.StreamChunk{Payload: traeAnthropicSSEChunk("content_block_stop", payload)}
 				}
 				for callIdx, blockIdx := range anthropicToolBlockIdx {
 					if !anthropicToolStopped[callIdx] {
 						anthropicToolStopped[callIdx] = true
 						payload, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": blockIdx})
-						chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+						chunks <- cliproxyexecutor.StreamChunk{Payload: traeAnthropicSSEChunk("content_block_stop", payload)}
 					}
 				}
 				stopReason := "end_turn"
@@ -552,13 +659,13 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 					outputTokens = tokenUsage.CompletionTokens
 				}
 				payload, _ := json.Marshal(map[string]any{
-					"type":         "message_delta",
-					"delta":        map[string]any{"stop_reason": stopReason},
-					"usage":        map[string]any{"output_tokens": outputTokens},
+					"type":  "message_delta",
+					"delta": map[string]any{"stop_reason": stopReason},
+					"usage": map[string]any{"output_tokens": outputTokens},
 				})
-				chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+				chunks <- cliproxyexecutor.StreamChunk{Payload: traeAnthropicSSEChunk("message_delta", payload)}
 				payload, _ = json.Marshal(map[string]any{"type": "message_stop"})
-				chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
+				chunks <- cliproxyexecutor.StreamChunk{Payload: traeAnthropicSSEChunk("message_stop", payload)}
 			}
 		} else {
 			stop := "stop"
@@ -607,6 +714,18 @@ func (e *TraeExecutor) deriveConversationID(opts cliproxyexecutor.Options) strin
 		if s, ok := sid.(string); ok && s != "" {
 			return s
 		}
+	}
+	return newTraeID()
+}
+
+func (e *TraeExecutor) deriveSessionID(opts cliproxyexecutor.Options) string {
+	clientSessionID := cliproxyauth.ExtractSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	if clientSessionID != "" {
+		h := sha256.Sum256([]byte("trae-session:" + clientSessionID))
+		h[6] = (h[6] & 0x0f) | 0x50 // Version 5
+		h[8] = (h[8] & 0x3f) | 0x80 // Variant 10
+		return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+			h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
 	}
 	return newTraeID()
 }
@@ -702,7 +821,7 @@ func (e *TraeExecutor) buildOpenAIGatewayRequest(req cliproxyexecutor.Request, o
 	}
 
 	conversationID := e.deriveConversationID(opts)
-	sessionID := newTraeID()
+	sessionID := e.deriveSessionID(opts)
 	return traeGatewayRequestBody{
 		ConfigName:     configName,
 		ConversationID: conversationID,
@@ -710,6 +829,7 @@ func (e *TraeExecutor) buildOpenAIGatewayRequest(req cliproxyexecutor.Request, o
 		ModelName:      modelName,
 		Messages:       messages,
 		Tools:          normalizeOpenAITools(body.Tools),
+		UserInput:      lastUserMessageText(messages),
 	}, nil
 }
 
@@ -766,7 +886,7 @@ func (e *TraeExecutor) buildAnthropicGatewayRequest(req cliproxyexecutor.Request
 	}
 
 	conversationID := e.deriveConversationID(opts)
-	sessionID := newTraeID()
+	sessionID := e.deriveSessionID(opts)
 	return traeGatewayRequestBody{
 		ConfigName:     configName,
 		ConversationID: conversationID,
@@ -774,7 +894,23 @@ func (e *TraeExecutor) buildAnthropicGatewayRequest(req cliproxyexecutor.Request
 		ModelName:      modelName,
 		Messages:       messages,
 		Tools:          convertAnthropicToolsToOpenAI(body.Tools),
+		UserInput:      lastUserMessageText(messages),
 	}, nil
+}
+
+// lastUserMessageText returns the text content of the last user message
+// in the converted message list. Returns empty string if none found.
+func lastUserMessageText(messages []traeGatewayMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			for _, b := range messages[i].Content {
+				if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+					return b.Text
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // runTraeGateway sends a request to Trae Gateway and reads SSE events.
@@ -823,12 +959,12 @@ func (e *TraeExecutor) runTraeGateway(ctx context.Context, host, token string, b
 		"model_name":            body.ModelName,
 		"real_api_key":          "",
 		"real_base_url":         "",
-		"session_id":            body.ConversationID,
+		"session_id":            body.SessionID,
 		"user_prompt_submit_id": agentLoopID,
 	})
 	httpReq.Header.Set("Extra", string(extra))
 
-	client := helps.NewProxyAwareHTTPClient(ctx, e.cfg, nil, 150*time.Second)
+	client := &http.Client{Transport: traeTransport, Timeout: 150 * time.Second}
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -969,6 +1105,21 @@ func readTraeGatewayEvents(ctx context.Context, body io.Reader, onEvent func(gat
 
 // --- Types ported from go-tools ---
 
+// traeAnthropicSSEChunk wraps a Claude SSE JSON payload with SSE framing:
+// "event: <eventType>\ndata: <json>\n\n".
+// The Claude handler forwards chunks as-is; without framing the client cannot
+// parse individual events and buffers everything until the stream closes.
+func traeAnthropicSSEChunk(eventType string, payload []byte) []byte {
+	out := make([]byte, 0, 7+len(eventType)+7+len(payload)+2)
+	out = append(out, "event: "...)
+	out = append(out, eventType...)
+	out = append(out, '\n')
+	out = append(out, "data: "...)
+	out = append(out, payload...)
+	out = append(out, '\n', '\n')
+	return out
+}
+
 type traeMessage struct {
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
@@ -1101,24 +1252,25 @@ type usageInfo struct {
 // --- Response types ---
 
 type traeOpenAIResponse struct {
-	ID      string           `json:"id"`
-	Object  string           `json:"object"`
-	Created int64            `json:"created"`
-	Model   string           `json:"model"`
+	ID      string             `json:"id"`
+	Object  string             `json:"object"`
+	Created int64              `json:"created"`
+	Model   string             `json:"model"`
 	Choices []traeOpenAIChoice `json:"choices"`
-	Usage   traeOpenAIUsage  `json:"usage"`
+	Usage   traeOpenAIUsage    `json:"usage"`
 }
 
 type traeOpenAIChoice struct {
-	Index        int              `json:"index"`
+	Index        int               `json:"index"`
 	Message      traeOpenAIMessage `json:"message"`
-	FinishReason string           `json:"finish_reason"`
+	FinishReason string            `json:"finish_reason"`
 }
 
 type traeOpenAIMessage struct {
-	Role      string               `json:"role"`
-	Content   string               `json:"content,omitempty"`
-	ToolCalls []traeOpenAIToolCall `json:"tool_calls,omitempty"`
+	Role             string               `json:"role"`
+	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	Content          string               `json:"content,omitempty"`
+	ToolCalls        []traeOpenAIToolCall `json:"tool_calls,omitempty"`
 }
 
 type traeOpenAIUsage struct {
@@ -1128,23 +1280,24 @@ type traeOpenAIUsage struct {
 }
 
 type traeOpenAIStreamChunk struct {
-	ID      string                 `json:"id"`
-	Object  string                 `json:"object"`
-	Created int64                  `json:"created"`
-	Model   string                 `json:"model"`
+	ID      string                   `json:"id"`
+	Object  string                   `json:"object"`
+	Created int64                    `json:"created"`
+	Model   string                   `json:"model"`
 	Choices []traeOpenAIStreamChoice `json:"choices"`
 }
 
 type traeOpenAIStreamChoice struct {
-	Index        int                `json:"index"`
+	Index        int                   `json:"index"`
 	Delta        traeOpenAIStreamDelta `json:"delta"`
-	FinishReason *string            `json:"finish_reason"`
+	FinishReason *string               `json:"finish_reason"`
 }
 
 type traeOpenAIStreamDelta struct {
-	Role      string                   `json:"role,omitempty"`
-	Content   string                   `json:"content,omitempty"`
-	ToolCalls []traeOpenAIToolCall     `json:"tool_calls,omitempty"`
+	Role             string               `json:"role,omitempty"`
+	Content          string               `json:"content,omitempty"`
+	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	ToolCalls        []traeOpenAIToolCall `json:"tool_calls,omitempty"`
 }
 
 type traeOpenAIToolCall struct {
@@ -1160,21 +1313,23 @@ type traeOpenAIToolCallFunc struct {
 }
 
 type traeAnthropicResponse struct {
-	ID         string                     `json:"id"`
-	Type       string                     `json:"type"`
-	Role       string                     `json:"role"`
-	Model      string                     `json:"model"`
+	ID         string                      `json:"id"`
+	Type       string                      `json:"type"`
+	Role       string                      `json:"role"`
+	Model      string                      `json:"model"`
 	Content    []traeAnthropicContentBlock `json:"content"`
-	StopReason string                     `json:"stop_reason"`
-	Usage      traeAnthropicUsage         `json:"usage"`
+	StopReason string                      `json:"stop_reason"`
+	Usage      traeAnthropicUsage          `json:"usage"`
 }
 
 type traeAnthropicContentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
 }
 
 type traeAnthropicUsage struct {
@@ -1297,10 +1452,10 @@ func normalizeOpenAITools(tools json.RawMessage) json.RawMessage {
 // Preserves tool_calls on assistant messages and tool_call_id on tool messages.
 func parseOpenAIMessage(raw json.RawMessage) traeGatewayMessage {
 	var msg struct {
-		Role       string                   `json:"role"`
-		Content    json.RawMessage          `json:"content"`
-		ToolCalls  []traeOpenAIToolCall     `json:"tool_calls,omitempty"`
-		ToolCallID string                   `json:"tool_call_id,omitempty"`
+		Role       string               `json:"role"`
+		Content    json.RawMessage      `json:"content"`
+		ToolCalls  []traeOpenAIToolCall `json:"tool_calls,omitempty"`
+		ToolCallID string               `json:"tool_call_id,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return traeGatewayMessage{}
@@ -1402,6 +1557,7 @@ func parseAnthropicMessage(raw json.RawMessage) []traeGatewayMessage {
 	// Each tool_result block becomes its own separate tool message.
 	mainMsg := traeGatewayMessage{Role: msg.Role}
 	var result []traeGatewayMessage
+	toolUseIdx := 0
 
 	for _, b := range blocks {
 		switch b.Type {
@@ -1412,13 +1568,15 @@ func parseAnthropicMessage(raw json.RawMessage) []traeGatewayMessage {
 		case "tool_use":
 			args, _ := json.Marshal(b.Input)
 			mainMsg.ToolCalls = append(mainMsg.ToolCalls, traeGatewayToolCall{
-				ID:   b.ID,
-				Type: "function",
+				Index: toolUseIdx,
+				ID:    b.ID,
+				Type:  "function",
 				FunctionCall: traeGatewayToolCallFunc{
 					Name:      b.Name,
 					Arguments: string(args),
 				},
 			})
+			toolUseIdx++
 		case "tool_result":
 			resultText := extractToolResultText(b.Content)
 			if resultText == "" {

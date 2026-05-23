@@ -186,19 +186,18 @@ func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
 }
 
 func requestExecutionMetadata(ctx context.Context) map[string]any {
+	meta := map[string]any{}
+
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
 	// Only include it if the client explicitly provides it.
-	key := ""
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
+			if key := strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key")); key != "" {
+				meta[idempotencyKeyMetadataKey] = key
+			}
 		}
 	}
-	if key == "" {
-		return make(map[string]any)
-	}
 
-	meta := map[string]any{idempotencyKeyMetadataKey: key}
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
 	}

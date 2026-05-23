@@ -131,8 +131,8 @@ type Server struct {
 	handlers *handlers.BaseAPIHandler
 
 	// cfg holds the current server configuration.
-	cfg    *config.Config
-	cfgMu  sync.RWMutex
+	cfg   *config.Config
+	cfgMu sync.RWMutex
 
 	// oldConfigYaml stores a YAML snapshot of the previous configuration for change detection.
 	// This prevents issues when the config object is modified in place by Management API.
@@ -292,20 +292,20 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Setup routes
 	s.setupRoutes()
 
-		// Handle CORS preflight for proxy paths that don't have explicit OPTIONS routes
-		engine.NoRoute(func(c *gin.Context) {
-			if c.Request.Method == "OPTIONS" {
-				path := c.Request.URL.Path
-				if strings.HasPrefix(path, "/v1") || strings.HasPrefix(path, "/v1beta") {
-					c.Header("Access-Control-Allow-Origin", "*")
-					c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-					c.Header("Access-Control-Allow-Headers", "*")
-					c.AbortWithStatus(http.StatusNoContent)
-					return
-				}
+	// Handle CORS preflight for proxy paths that don't have explicit OPTIONS routes
+	engine.NoRoute(func(c *gin.Context) {
+		if c.Request.Method == "OPTIONS" {
+			path := c.Request.URL.Path
+			if strings.HasPrefix(path, "/v1") || strings.HasPrefix(path, "/v1beta") {
+				c.Header("Access-Control-Allow-Origin", "*")
+				c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+				c.Header("Access-Control-Allow-Headers", "*")
+				c.AbortWithStatus(http.StatusNoContent)
+				return
 			}
-			c.AbortWithStatus(http.StatusNotFound)
-		})
+		}
+		c.AbortWithStatus(http.StatusNotFound)
+	})
 
 	// Register Amp module using V2 interface with Context
 	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager))
@@ -364,7 +364,7 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(corsMiddleware())
-		v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(AuthMiddleware(s.accessManager))
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -379,7 +379,7 @@ func (s *Server) setupRoutes() {
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(corsMiddleware())
-		v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(AuthMiddleware(s.accessManager))
 	{
 		v1beta.GET("/models", geminiHandlers.GeminiModels)
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
