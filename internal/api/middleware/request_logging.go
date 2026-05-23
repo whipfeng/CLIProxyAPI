@@ -105,6 +105,27 @@ func shouldCaptureRequestBody(loggerEnabled bool, req *http.Request) bool {
 	return req.ContentLength <= maxErrorOnlyCapturedRequestBodyBytes
 }
 
+// sensitiveHeaders lists header names whose values must be redacted in request logs.
+var sensitiveHeaders = map[string]bool{
+	"authorization":       true,
+	"proxy-authorization": true,
+	"x-api-key":           true,
+	"api-key":             true,
+}
+
+// canonicalHeaderKey normalizes a header name for case-insensitive matching.
+func canonicalHeaderKey(key string) string {
+	return strings.ToLower(strings.TrimSpace(key))
+}
+
+func redactHeaderValues(values []string) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = util.HideAPIKey(v)
+	}
+	return out
+}
+
 // captureRequestInfo extracts relevant information from the incoming HTTP request.
 // It captures the URL, method, headers, and body. The request body is read and then
 // restored so that it can be processed by subsequent handlers.
@@ -119,10 +140,14 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	// Capture method
 	method := c.Request.Method
 
-	// Capture headers
+	// Capture headers (redact sensitive values)
 	headers := make(map[string][]string)
 	for key, values := range c.Request.Header {
-		headers[key] = values
+		if sensitiveHeaders[canonicalHeaderKey(key)] {
+			headers[key] = redactHeaderValues(values)
+		} else {
+			headers[key] = values
+		}
 	}
 
 	// Capture request body

@@ -1311,6 +1311,15 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 		reason = "session_closed"
 	}
 
+	// Cancel any active context to prevent resource leaks.
+	sess.activeMu.Lock()
+	if sess.activeCancel != nil {
+		sess.activeCancel()
+		sess.activeCancel = nil
+		sess.activeDone = nil
+	}
+	sess.activeMu.Unlock()
+
 	sess.connMu.Lock()
 	conn := sess.conn
 	authID := sess.authID

@@ -131,7 +131,8 @@ type Server struct {
 	handlers *handlers.BaseAPIHandler
 
 	// cfg holds the current server configuration.
-	cfg *config.Config
+	cfg    *config.Config
+	cfgMu  sync.RWMutex
 
 	// oldConfigYaml stores a YAML snapshot of the previous configuration for change detection.
 	// This prevents issues when the config object is modified in place by Management API.
@@ -177,6 +178,20 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+}
+
+// getCfg returns the current server configuration under read lock.
+func (s *Server) getCfg() *config.Config {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg
+}
+
+// setCfg updates the server configuration under write lock.
+func (s *Server) setCfg(cfg *config.Config) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	s.cfg = cfg
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -393,7 +408,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "anthropic", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.getCfg().AuthDir, "anthropic", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -407,7 +422,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "codex", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.getCfg().AuthDir, "codex", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -421,7 +436,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "gemini", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.getCfg().AuthDir, "gemini", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -435,7 +450,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "iflow", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.getCfg().AuthDir, "iflow", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -449,7 +464,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "antigravity", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.getCfg().AuthDir, "antigravity", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -681,7 +696,7 @@ func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
-	cfg := s.cfg
+	cfg := s.getCfg()
 	if cfg == nil || cfg.RemoteManagement.DisableControlPanel {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
@@ -707,6 +722,9 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
+	c.Header("X-Frame-Options", "DENY")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
 	c.File(filePath)
 }
 
@@ -817,10 +835,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
 	}
 
-	useTLS := s.cfg != nil && s.cfg.TLS.Enable
+	cfg := s.getCfg()
+	useTLS := cfg != nil && cfg.TLS.Enable
 	if useTLS {
-		cert := strings.TrimSpace(s.cfg.TLS.Cert)
-		key := strings.TrimSpace(s.cfg.TLS.Key)
+		cert := strings.TrimSpace(cfg.TLS.Cert)
+		key := strings.TrimSpace(cfg.TLS.Key)
 		if cert == "" || key == "" {
 			return fmt.Errorf("failed to start HTTPS server: tls.cert or tls.key is empty")
 		}
@@ -985,7 +1004,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	}
 
 	s.applyAccessConfig(oldCfg, cfg)
-	s.cfg = cfg
+	s.setCfg(cfg)
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)

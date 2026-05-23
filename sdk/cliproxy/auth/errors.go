@@ -30,3 +30,13 @@ func (e *Error) StatusCode() int {
 	}
 	return e.HTTPStatus
 }
+
+// sanitizeErrorMessage caps the length of an upstream error message to prevent
+// stack traces or large diagnostic payloads from leaking to API clients.
+func sanitizeErrorMessage(raw string) string {
+	const maxMsgLen = 1024
+	if len(raw) > maxMsgLen {
+		return raw[:maxMsgLen] + "..."
+	}
+	return raw
+}

@@ -820,6 +820,8 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	if a == nil || a.ID == "" {
 		return
 	}
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
 	if a.Disabled {
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return

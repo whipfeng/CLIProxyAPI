@@ -94,24 +94,8 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 			log.Debugf("debouncing remove event for %s", filepath.Base(event.Name))
 			return
 		}
-		// Atomic replace on some platforms may surface as Rename (or Remove) before the new file is ready.
-		// Wait briefly; if the path exists again, treat as an update instead of removal.
-		time.Sleep(replaceCheckDelay)
-		if _, statErr := os.Stat(event.Name); statErr == nil {
-			if unchanged, errSame := w.authFileUnchanged(event.Name); errSame == nil && unchanged {
-				log.Debugf("auth file unchanged (hash match), skipping reload: %s", filepath.Base(event.Name))
-				return
-			}
-			log.Infof("auth file changed (%s): %s, processing incrementally", event.Op.String(), filepath.Base(event.Name))
-			w.addOrUpdateClient(event.Name)
-			return
-		}
-		if !w.isKnownAuthFile(event.Name) {
-			log.Debugf("ignoring remove for unknown auth file: %s", filepath.Base(event.Name))
-			return
-		}
-		log.Infof("auth file changed (%s): %s, processing incrementally", event.Op.String(), filepath.Base(event.Name))
-		w.removeClient(event.Name)
+		// Run replace-check asynchronously to avoid blocking the event loop.
+		go w.handleRemoveOrRenameEvent(event.Name)
 		return
 	}
 	if event.Op&(fsnotify.Create|fsnotify.Write) != 0 {
@@ -122,6 +106,27 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 		log.Infof("auth file changed (%s): %s, processing incrementally", event.Op.String(), filepath.Base(event.Name))
 		w.addOrUpdateClient(event.Name)
 	}
+}
+
+func (w *Watcher) handleRemoveOrRenameEvent(name string) {
+	// Atomic replace on some platforms may surface as Rename (or Remove) before the new file is ready.
+	// Wait briefly; if the path exists again, treat as an update instead of removal.
+	time.Sleep(replaceCheckDelay)
+	if _, statErr := os.Stat(name); statErr == nil {
+		if unchanged, errSame := w.authFileUnchanged(name); errSame == nil && unchanged {
+			log.Debugf("auth file unchanged (hash match), skipping reload: %s", filepath.Base(name))
+			return
+		}
+		log.Infof("auth file changed (rename/replace): %s, processing incrementally", filepath.Base(name))
+		w.addOrUpdateClient(name)
+		return
+	}
+	if !w.isKnownAuthFile(name) {
+		log.Debugf("ignoring remove for unknown auth file: %s", filepath.Base(name))
+		return
+	}
+	log.Infof("auth file removed: %s, processing incrementally", filepath.Base(name))
+	w.removeClient(name)
 }
 
 func (w *Watcher) authFileUnchanged(path string) (bool, error) {

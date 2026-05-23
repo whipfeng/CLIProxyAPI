@@ -674,12 +674,20 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 	return selectionKey != "" && selectionKey != routeKey && registryRef.ClientSupportsModel(auth.ID, selectionKey)
 }
 
-func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {
+func discardStreamChunks(ctx context.Context, ch <-chan cliproxyexecutor.StreamChunk) {
 	if ch == nil {
 		return
 	}
 	go func() {
-		for range ch {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case _, ok := <-ch:
+				if !ok {
+					return
+				}
+			}
 		}
 	}()
 }
@@ -778,7 +786,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if chunk.Err != nil && !failed {
 				failed = true
-				rerr := &Error{Message: chunk.Err.Error()}
+				rerr := &Error{Message: sanitizeErrorMessage(chunk.Err.Error())}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
 					rerr.HTTPStatus = se.StatusCode()
 				}
@@ -801,13 +809,13 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		}
 		for _, chunk := range buffered {
 			if ok := emit(chunk); !ok {
-				discardStreamChunks(remaining)
+				discardStreamChunks(ctx, remaining)
 				return
 			}
 		}
 		for chunk := range remaining {
 			if ok := emit(chunk); !ok {
-				discardStreamChunks(remaining)
+				discardStreamChunks(ctx, remaining)
 				return
 			}
 		}
@@ -832,7 +840,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if errCtx := ctx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
-			rerr := &Error{Message: errStream.Error()}
+			rerr := &Error{Message: sanitizeErrorMessage(errStream.Error())}
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errStream); ok && se != nil {
 				rerr.HTTPStatus = se.StatusCode()
 			}
@@ -849,40 +857,40 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks)
 		if bootstrapErr != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
-				discardStreamChunks(streamResult.Chunks)
+				discardStreamChunks(ctx, streamResult.Chunks)
 				return nil, errCtx
 			}
 			if isRequestInvalidError(bootstrapErr) {
-				rerr := &Error{Message: bootstrapErr.Error()}
+				rerr := &Error{Message: sanitizeErrorMessage(bootstrapErr.Error())}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
 					rerr.HTTPStatus = se.StatusCode()
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
-				discardStreamChunks(streamResult.Chunks)
+				discardStreamChunks(ctx, streamResult.Chunks)
 				return nil, bootstrapErr
 			}
 			if idx < len(execModels)-1 {
-				rerr := &Error{Message: bootstrapErr.Error()}
+				rerr := &Error{Message: sanitizeErrorMessage(bootstrapErr.Error())}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
 					rerr.HTTPStatus = se.StatusCode()
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
-				discardStreamChunks(streamResult.Chunks)
+				discardStreamChunks(ctx, streamResult.Chunks)
 				lastErr = bootstrapErr
 				continue
 			}
-			rerr := &Error{Message: bootstrapErr.Error()}
+			rerr := &Error{Message: sanitizeErrorMessage(bootstrapErr.Error())}
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
 				rerr.HTTPStatus = se.StatusCode()
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(bootstrapErr)
 			m.MarkResult(ctx, result)
-			discardStreamChunks(streamResult.Chunks)
+			discardStreamChunks(ctx, streamResult.Chunks)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 		}
 
@@ -1315,7 +1323,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
-				result.Error = &Error{Message: errExec.Error()}
+				result.Error = &Error{Message: sanitizeErrorMessage(errExec.Error())}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
 					result.Error.HTTPStatus = se.StatusCode()
 				}
@@ -1393,7 +1401,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
-				result.Error = &Error{Message: errExec.Error()}
+				result.Error = &Error{Message: sanitizeErrorMessage(errExec.Error())}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
 					result.Error.HTTPStatus = se.StatusCode()
 				}
@@ -3214,7 +3222,7 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 		m.mu.Lock()
 		if current := m.auths[id]; current != nil {
 			current.NextRefreshAfter = now.Add(refreshFailureBackoff)
-			current.LastError = &Error{Message: err.Error()}
+			current.LastError = &Error{Message: sanitizeErrorMessage(err.Error())}
 			m.auths[id] = current
 			shouldReschedule = true
 			if m.scheduler != nil {
