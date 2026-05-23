@@ -675,7 +675,7 @@ func (e *TraeExecutor) runTraeGateway(ctx context.Context, host, token string, b
 		body.ConversationID = newTraeID()
 	}
 	if body.SessionID == "" {
-		body.SessionID = body.ConversationID
+		body.SessionID = newTraeID()
 	}
 
 	encoded, err := json.Marshal(body)
@@ -717,7 +717,7 @@ func (e *TraeExecutor) runTraeGateway(ctx context.Context, host, token string, b
 	})
 	httpReq.Header.Set("Extra", string(extra))
 
-	client := &http.Client{Timeout: 150 * time.Second}
+	client := helps.NewProxyAwareHTTPClient(ctx, e.cfg, nil, 150*time.Second)
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -1340,30 +1340,6 @@ func parseAnthropicMessage(raw json.RawMessage) []traeGatewayMessage {
 }
 
 func extractToolResultText(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
-		return ""
-	}
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
-		return text
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &blocks); err == nil {
-		var texts []string
-		for _, b := range blocks {
-			if b.Type == "" || b.Type == "text" {
-				texts = append(texts, b.Text)
-			}
-		}
-		return strings.Join(texts, "\n")
-	}
-	return ""
-}
-
-func extractMessageContent(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
