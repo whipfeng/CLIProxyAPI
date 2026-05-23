@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,7 +30,82 @@ import (
 // TraeExecutor implements a native provider for Trae Gateway.
 // It translates OpenAI and Anthropic requests into Trae Gateway's private protocol.
 type TraeExecutor struct {
-	cfg *config.Config
+	cfg   *config.Config
+	cache *traeResponseCache
+}
+
+// traeResponseCache provides a simple TTL-based in-memory cache for
+// non-streaming gateway responses. Identical requests within the TTL
+// are served from cache, saving token costs on the upstream model.
+type traeResponseCache struct {
+	mu      sync.RWMutex
+	items   map[string]*traeCacheEntry
+	maxSize int
+	ttl     time.Duration
+}
+
+type traeCacheEntry struct {
+	events    []gatewayStreamEvent
+	expiresAt time.Time
+}
+
+func newTraeResponseCache(maxSize int, ttl time.Duration) *traeResponseCache {
+	return &traeResponseCache{
+		items:   make(map[string]*traeCacheEntry),
+		maxSize: maxSize,
+		ttl:     ttl,
+	}
+}
+
+func (c *traeResponseCache) get(key string) ([]gatewayStreamEvent, bool) {
+	c.mu.RLock()
+	entry, ok := c.items[key]
+	c.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		c.mu.Lock()
+		delete(c.items, key)
+		c.mu.Unlock()
+		return nil, false
+	}
+	return entry.events, true
+}
+
+func (c *traeResponseCache) set(key string, events []gatewayStreamEvent) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Evict oldest entry if at capacity
+	if len(c.items) >= c.maxSize {
+		for k := range c.items {
+			delete(c.items, k)
+			break
+		}
+	}
+	c.items[key] = &traeCacheEntry{
+		events:    events,
+		expiresAt: time.Now().Add(c.ttl),
+	}
+}
+
+func traeCacheKey(body traeGatewayRequestBody) string {
+	h := sha256.New()
+	h.Write([]byte(body.ConfigName))
+	h.Write([]byte(body.ModelName))
+	if data, err := json.Marshal(body.Messages); err == nil {
+		h.Write(data)
+	} else {
+		// Fallback: write a random nonce so this request never collides
+		// with a valid cache entry.
+		var b [16]byte
+		rand.Read(b[:])
+		h.Write(b[:])
+	}
+	if len(body.Tools) > 0 {
+		h.Write(body.Tools)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 var (
@@ -59,7 +136,10 @@ func traeLogf(format string, args ...interface{}) {
 
 // NewTraeExecutor creates a new Trae executor.
 func NewTraeExecutor(cfg *config.Config) *TraeExecutor {
-	return &TraeExecutor{cfg: cfg}
+	return &TraeExecutor{
+		cfg:   cfg,
+		cache: newTraeResponseCache(100, 5*time.Minute),
+	}
 }
 
 // Identifier returns the provider key.
@@ -110,9 +190,17 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	gatewayReqBytes, _ := json.Marshal(gatewayReq)
 	traeLogf("[Execute] gateway_request=%s", string(gatewayReqBytes))
 
-	events, err := e.runTraeGateway(ctx, gatewayHost, token, gatewayReq, nil)
-	if err != nil {
-		return resp, err
+	var events []gatewayStreamEvent
+	cacheKey := traeCacheKey(gatewayReq)
+	if cached, ok := e.cache.get(cacheKey); ok {
+		traeLogf("[Execute] cache_hit")
+		events = cached
+	} else {
+		events, err = e.runTraeGateway(ctx, gatewayHost, token, gatewayReq, nil)
+		if err != nil {
+			return resp, err
+		}
+		e.cache.set(cacheKey, events)
 	}
 
 	var content strings.Builder
@@ -142,7 +230,13 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, statusErr{code: http.StatusBadGateway, msg: "empty trae gateway response"}
 	}
 
-	reporter.Publish(ctx, usage.Detail{InputTokens: int64(tokenUsage.PromptTokens), OutputTokens: int64(tokenUsage.CompletionTokens), TotalTokens: int64(tokenUsage.TotalTokens)})
+	var promptTokens, completionTokens, totalTokens int
+	if tokenUsage != nil {
+		promptTokens = tokenUsage.PromptTokens
+		completionTokens = tokenUsage.CompletionTokens
+		totalTokens = tokenUsage.TotalTokens
+		reporter.Publish(ctx, usage.Detail{InputTokens: int64(tokenUsage.PromptTokens), OutputTokens: int64(tokenUsage.CompletionTokens), TotalTokens: int64(tokenUsage.TotalTokens)})
+	}
 	reporter.EnsurePublished(ctx)
 
 	var finalText string
@@ -178,7 +272,7 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			Model:      req.Model,
 			Content:    anthropicContent,
 			StopReason: stopReason,
-			Usage:      traeAnthropicUsage{InputTokens: tokenUsage.PromptTokens, OutputTokens: tokenUsage.CompletionTokens},
+			Usage:      traeAnthropicUsage{InputTokens: promptTokens, OutputTokens: completionTokens},
 		})
 		return cliproxyexecutor.Response{Payload: out}, nil
 	}
@@ -214,7 +308,7 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			Message:      message,
 			FinishReason: finishReason,
 		}},
-		Usage: traeOpenAIUsage{PromptTokens: tokenUsage.PromptTokens, CompletionTokens: tokenUsage.CompletionTokens, TotalTokens: tokenUsage.TotalTokens},
+		Usage: traeOpenAIUsage{PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: totalTokens},
 	})
 	return cliproxyexecutor.Response{Payload: out}, nil
 }
@@ -453,10 +547,14 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				if gatewayFinishReason == "tool_calls" || hasToolCalls {
 					stopReason = "tool_use"
 				}
+				outputTokens := 0
+				if tokenUsage != nil {
+					outputTokens = tokenUsage.CompletionTokens
+				}
 				payload, _ := json.Marshal(map[string]any{
 					"type":         "message_delta",
 					"delta":        map[string]any{"stop_reason": stopReason},
-					"usage":        map[string]any{"output_tokens": tokenUsage.CompletionTokens},
+					"usage":        map[string]any{"output_tokens": outputTokens},
 				})
 				chunks <- cliproxyexecutor.StreamChunk{Payload: payload}
 				payload, _ = json.Marshal(map[string]any{"type": "message_stop"})
@@ -498,6 +596,19 @@ func (e *TraeExecutor) resolveCredentials(auth *cliproxyauth.Auth) (host, token 
 		host = "https://console.enterprise.trae.cn"
 	}
 	return host, token
+}
+
+// deriveConversationID returns a stable conversation ID derived from the
+// execution session when available. This allows the downstream model to
+// reuse prefix KV cache across turns of the same long-lived session,
+// improving latency without changing token accounting.
+func (e *TraeExecutor) deriveConversationID(opts cliproxyexecutor.Options) string {
+	if sid, ok := opts.Metadata[cliproxyexecutor.ExecutionSessionMetadataKey]; ok {
+		if s, ok := sid.(string); ok && s != "" {
+			return s
+		}
+	}
+	return newTraeID()
 }
 
 // resolveTraeKey finds the matching TraeKey from the executor config using auth credentials.
@@ -590,7 +701,7 @@ func (e *TraeExecutor) buildOpenAIGatewayRequest(req cliproxyexecutor.Request, o
 		return traeGatewayRequestBody{}, errors.New("message content is required")
 	}
 
-	conversationID := newTraeID()
+	conversationID := e.deriveConversationID(opts)
 	sessionID := newTraeID()
 	return traeGatewayRequestBody{
 		ConfigName:     configName,
@@ -654,7 +765,7 @@ func (e *TraeExecutor) buildAnthropicGatewayRequest(req cliproxyexecutor.Request
 		return traeGatewayRequestBody{}, errors.New("message content is required")
 	}
 
-	conversationID := newTraeID()
+	conversationID := e.deriveConversationID(opts)
 	sessionID := newTraeID()
 	return traeGatewayRequestBody{
 		ConfigName:     configName,

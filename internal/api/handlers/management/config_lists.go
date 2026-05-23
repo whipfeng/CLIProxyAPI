@@ -707,10 +707,14 @@ func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
 
 // oauth-excluded-models: map[string][]string
 func (h *Handler) GetOAuthExcludedModels(c *gin.Context) {
+	h.cfgMu.RLock()
+	defer h.cfgMu.RUnlock()
 	c.JSON(200, gin.H{"oauth-excluded-models": config.NormalizeOAuthExcludedModels(h.cfg.OAuthExcludedModels)})
 }
 
 func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
+	h.cfgMu.Lock()
+	defer h.cfgMu.Unlock()
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -732,6 +736,8 @@ func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
 }
 
 func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
+	h.cfgMu.Lock()
+	defer h.cfgMu.Unlock()
 	var body struct {
 		Provider *string  `json:"provider"`
 		Models   []string `json:"models"`
@@ -770,6 +776,8 @@ func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
 }
 
 func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
+	h.cfgMu.Lock()
+	defer h.cfgMu.Unlock()
 	provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
 	if provider == "" {
 		c.JSON(400, gin.H{"error": "missing provider"})
@@ -792,10 +800,14 @@ func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
 
 // oauth-model-alias: map[string][]OAuthModelAlias
 func (h *Handler) GetOAuthModelAlias(c *gin.Context) {
+	h.cfgMu.RLock()
+	defer h.cfgMu.RUnlock()
 	c.JSON(200, gin.H{"oauth-model-alias": sanitizedOAuthModelAlias(h.cfg.OAuthModelAlias)})
 }
 
 func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
+	h.cfgMu.Lock()
+	defer h.cfgMu.Unlock()
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -817,6 +829,8 @@ func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
 }
 
 func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
+	h.cfgMu.Lock()
+	defer h.cfgMu.Unlock()
 	var body struct {
 		Provider *string                  `json:"provider"`
 		Channel  *string                  `json:"channel"`
@@ -864,6 +878,8 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 }
 
 func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
+	h.cfgMu.Lock()
+	defer h.cfgMu.Unlock()
 	channel := strings.ToLower(strings.TrimSpace(c.Query("channel")))
 	if channel == "" {
 		channel = strings.ToLower(strings.TrimSpace(c.Query("provider")))
