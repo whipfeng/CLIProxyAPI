@@ -835,7 +835,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
 		execReq.Model = execModel
+		start := time.Now()
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, opts)
+		logEntryWithRequestID(ctx).Infof("[ConductorStream] executor=%s provider=%s model=%s elapsed=%v err=%v", executor.Identifier(), provider, routeModel, time.Since(start), errStream)
 		if errStream != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
 				return nil, errCtx
@@ -1317,7 +1319,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
 			execReq.Model = upstreamModel
+			start := time.Now()
 			resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
+			entry.Infof("[Conductor] executor=%s provider=%s model=%s elapsed=%v err=%v", executor.Identifier(), provider, routeModel, time.Since(start), errExec)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {

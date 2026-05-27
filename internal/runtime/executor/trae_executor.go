@@ -35,9 +35,9 @@ import (
 // TraeExecutor implements a native provider for Trae Gateway.
 // It translates OpenAI and Anthropic requests into Trae Gateway's private protocol.
 type TraeExecutor struct {
-	cfg            *config.Config
-	cache          *traeResponseCache
-	pcidStore      *traePCIDStore
+	cfg             *config.Config
+	cache           *traeResponseCache
+	pcidStore       *traePCIDStore
 	taintedSessions map[string]int // client session hex -> rotation counter (risk control)
 	taintedMu       sync.Mutex
 }
@@ -160,7 +160,8 @@ var (
 			NextProtos: []string{"h2", "http/1.1"},
 		},
 	}
-	traeHTTPClient       = &http.Client{Transport: traeTransport, Timeout: 0}
+	traeHTTPClient = &http.Client{Transport: traeTransport, Timeout: 0}
+	TraeHTTPClient = traeHTTPClient
 )
 
 var traeLogInitOnce sync.Once
@@ -253,12 +254,12 @@ func (e *TraeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		updated.Metadata = meta
 	}
 	updated.Metadata["refresh_token"] = newAuth.Data.RefreshToken
-	updated.Metadata["token_expire_at"] = newAuth.Data.TokenExpireAt
+	updated.Metadata["expires_at"] = newAuth.Data.TokenExpireAt
 	log.Infof("[Trae] Token refreshed successfully")
 	return &updated, nil
 }
 
-type traeExchangeTokenResponse struct {
+type TraeExchangeTokenResponse struct {
 	Code int `json:"code"`
 	Data struct {
 		Token               string `json:"Token"`
@@ -269,7 +270,12 @@ type traeExchangeTokenResponse struct {
 	} `json:"Data"`
 }
 
-func (e *TraeExecutor) exchangeTraeToken(ctx context.Context, host, refreshToken string) (*traeExchangeTokenResponse, error) {
+func (e *TraeExecutor) exchangeTraeToken(ctx context.Context, host, refreshToken string) (*TraeExchangeTokenResponse, error) {
+	return ExchangeTraeToken(ctx, host, refreshToken)
+}
+
+// ExchangeTraeToken exchanges a Trae refresh token for a JWT using the Trae OAuth endpoint.
+func ExchangeTraeToken(ctx context.Context, host, refreshToken string) (*TraeExchangeTokenResponse, error) {
 	body := map[string]string{"RefreshToken": refreshToken}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -298,7 +304,7 @@ func (e *TraeExecutor) exchangeTraeToken(ctx context.Context, host, refreshToken
 		return nil, fmt.Errorf("ExchangeToken returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var result traeExchangeTokenResponse
+	var result TraeExchangeTokenResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, err
 	}
@@ -306,6 +312,85 @@ func (e *TraeExecutor) exchangeTraeToken(ctx context.Context, host, refreshToken
 		return nil, fmt.Errorf("ExchangeToken response code=%d, token empty", result.Code)
 	}
 	return &result, nil
+}
+
+// TraeConfigInfo represents a single config entry from get_config_list API.
+type TraeConfigInfo struct {
+	ConfigName      string          `json:"config_name"`
+	ConfigSource    int             `json:"config_source"`
+	ConfigSwitch    bool            `json:"config_switch"`
+	Usage           string          `json:"usage"`
+	DisplayConfig   json.RawMessage `json:"display_config"`
+	ExtraConfig     json.RawMessage `json:"extra_config"`
+	ModelDetailList []struct {
+		ModelName               string          `json:"model_name"`
+		MaxTokens               int             `json:"max_tokens"`
+		PromptMaxTokens         int             `json:"prompt_max_tokens"`
+		ToolCallHistoryMaxTokens int            `json:"tool_call_history_max_tokens"`
+		MaxTurn                 int             `json:"max_turn"`
+		ModelExtraConfig        json.RawMessage `json:"model_extra_config"`
+	} `json:"model_detail_list"`
+}
+
+// TraeConfigListResponse is the response from get_config_list API.
+type TraeConfigListResponse struct {
+	Message         string            `json:"message"`
+	ConfigInfoList  []TraeConfigInfo  `json:"config_info_list"`
+	AllowTenantUser bool              `json:"allow_tenant_user_add_model"`
+}
+
+// FetchTraeConfigList calls the Trae get_config_list API to fetch available models.
+func FetchTraeConfigList(ctx context.Context, baseURL, apiKey, refreshToken string) ([]TraeConfigInfo, string, error) {
+	host := strings.TrimRight(baseURL, "/")
+	if host == "" {
+		host = "https://console.enterprise.trae.cn"
+	}
+
+	// Exchange refresh token for JWT if needed.
+	if apiKey == "" && refreshToken != "" {
+		result, err := ExchangeTraeToken(ctx, host, refreshToken)
+		if err != nil {
+			return nil, "", fmt.Errorf("token exchange failed: %w", err)
+		}
+		apiKey = result.Data.Token
+	}
+	if apiKey == "" {
+		return nil, "", fmt.Errorf("api key or refresh token is required")
+	}
+
+	body := `{"function":"chat"}`
+	url := host + "/api/ide/v1/cli/get_config_list"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		return nil, "", err
+	}
+	httpReq.Header.Set("Authorization", "Cloud-IDE-JWT "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-App-Id", "7b3f9dc2-8a4e-5c6d-2f1b-9e4a3c5b7df0")
+	httpReq.Header.Set("X-Ide-Version-Code", "20260206")
+
+	resp, err := traeHTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("get_config_list returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result TraeConfigListResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, "", err
+	}
+	if result.Message != "success" {
+		return nil, "", fmt.Errorf("get_config_list failed: %s", result.Message)
+	}
+	return result.ConfigInfoList, apiKey, nil
 }
 
 // CountTokens implements cliproxyauth.ProviderExecutor.
@@ -324,6 +409,17 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	gatewayHost, token := e.resolveCredentials(auth)
 	if gatewayHost == "" {
 		return resp, statusErr{code: http.StatusUnauthorized, msg: "missing trae gateway host"}
+	}
+
+	// Exchange refresh_token for JWT when api_key is empty.
+	{
+		refreshed, newToken, refreshErr := e.ensureToken(ctx, auth)
+		if refreshErr != nil {
+			log.Errorf("[Trae] ensureToken failed: %v", refreshErr)
+		} else if refreshed != nil && newToken != "" {
+			auth = refreshed
+			token = newToken
+		}
 	}
 
 	from := opts.SourceFormat
@@ -400,11 +496,13 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, statusErr{code: http.StatusBadGateway, msg: "empty trae gateway response"}
 	}
 
-	var promptTokens, completionTokens, totalTokens int
+	var promptTokens, completionTokens, totalTokens, cacheReadTokens, cacheWriteTokens int
 	if tokenUsage != nil {
 		promptTokens = tokenUsage.PromptTokens
 		completionTokens = tokenUsage.CompletionTokens
 		totalTokens = tokenUsage.TotalTokens
+		cacheReadTokens = tokenUsage.CacheReadInputTokens
+		cacheWriteTokens = tokenUsage.CacheCreationInputTokens
 		reporter.Publish(ctx, usage.Detail{InputTokens: int64(tokenUsage.PromptTokens), OutputTokens: int64(tokenUsage.CompletionTokens), TotalTokens: int64(tokenUsage.TotalTokens)})
 	}
 	reporter.EnsurePublished(ctx)
@@ -438,7 +536,7 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			Model:      req.Model,
 			Content:    anthropicContent,
 			StopReason: stopReason,
-			Usage:      traeAnthropicUsage{InputTokens: promptTokens, OutputTokens: completionTokens},
+			Usage:      traeAnthropicUsage{InputTokens: promptTokens, OutputTokens: completionTokens, CacheReadInputTokens: cacheReadTokens, CacheCreationInputTokens: cacheWriteTokens},
 		})
 		log.Infof("[Trae] Execute done total=%v (anthropic)", time.Since(execStart))
 		return cliproxyexecutor.Response{Payload: out}, nil
@@ -475,7 +573,7 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			Message:      message,
 			FinishReason: finishReason,
 		}},
-		Usage: traeOpenAIUsage{PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: totalTokens},
+		Usage: traeOpenAIUsage{PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: totalTokens, CacheReadInputTokens: cacheReadTokens, CacheCreationInputTokens: cacheWriteTokens},
 	})
 	log.Infof("[Trae] Execute done total=%v (openai)", time.Since(execStart))
 	return cliproxyexecutor.Response{Payload: out}, nil
@@ -489,6 +587,17 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	gatewayHost, token := e.resolveCredentials(auth)
 	if gatewayHost == "" {
 		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing trae gateway host"}
+	}
+
+	// Exchange refresh_token for JWT when api_key is empty.
+	{
+		refreshed, newToken, refreshErr := e.ensureToken(ctx, auth)
+		if refreshErr != nil {
+			log.Errorf("[Trae] ensureToken failed: %v", refreshErr)
+		} else if refreshed != nil && newToken != "" {
+			auth = refreshed
+			token = newToken
+		}
 	}
 
 	from := opts.SourceFormat
@@ -840,13 +949,21 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 					stopReason = "tool_use"
 				}
 				outputTokens := 0
+				cacheReadTokens := 0
+				cacheWriteTokens := 0
 				if tokenUsage != nil {
 					outputTokens = tokenUsage.CompletionTokens
+					cacheReadTokens = tokenUsage.CacheReadInputTokens
+					cacheWriteTokens = tokenUsage.CacheCreationInputTokens
 				}
 				payload, _ := json.Marshal(map[string]any{
 					"type":  "message_delta",
 					"delta": map[string]any{"stop_reason": stopReason},
-					"usage": map[string]any{"output_tokens": outputTokens},
+					"usage": map[string]any{
+						"output_tokens":               outputTokens,
+						"cache_read_input_tokens":     cacheReadTokens,
+						"cache_creation_input_tokens": cacheWriteTokens,
+					},
 				})
 				chunks <- cliproxyexecutor.StreamChunk{Payload: traeAnthropicSSEChunk("message_delta", payload)}
 				payload, _ = json.Marshal(map[string]any{"type": "message_stop"})
@@ -890,6 +1007,32 @@ func (e *TraeExecutor) resolveCredentials(auth *cliproxyauth.Auth) (host, token 
 	return host, token
 }
 
+// ensureToken exchanges a refresh_token for a JWT when the api_key is
+// empty or the current token has expired.  It returns the (possibly
+// refreshed) auth, the bearer token, and any error.
+func (e *TraeExecutor) ensureToken(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, string, error) {
+	_, token := e.resolveCredentials(auth)
+	needRefresh := token == ""
+	if !needRefresh {
+		if expiry, ok := auth.ExpirationTime(); ok && !expiry.IsZero() && time.Now().After(expiry) {
+			needRefresh = true
+		}
+	}
+	if !needRefresh {
+		return auth, token, nil
+	}
+	refreshToken, _ := auth.Metadata["refresh_token"].(string)
+	if strings.TrimSpace(refreshToken) == "" {
+		return auth, token, nil
+	}
+	updated, err := e.Refresh(ctx, auth)
+	if err != nil {
+		return auth, "", err
+	}
+	_, newToken := e.resolveCredentials(updated)
+	return updated, newToken, nil
+}
+
 // deriveConversationID returns a stable conversation ID derived from the
 // execution session when available. This allows the downstream model to
 // reuse prefix KV cache across turns of the same long-lived session,
@@ -911,7 +1054,7 @@ func (e *TraeExecutor) deriveConversationID(opts cliproxyexecutor.Options) strin
 		return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 			h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
 	}
-	return newTraeID()
+	return NewTraeID()
 }
 
 func (e *TraeExecutor) deriveSessionID(opts cliproxyexecutor.Options) string {
@@ -931,7 +1074,7 @@ func (e *TraeExecutor) deriveSessionID(opts cliproxyexecutor.Options) string {
 		return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 			h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
 	}
-	return newTraeID()
+	return NewTraeID()
 }
 
 // taintSession marks a client session as dead (risk control), so future requests
@@ -969,6 +1112,11 @@ func (e *TraeExecutor) resolveTraeKey(auth *cliproxyauth.Auth) *config.TraeKey {
 			if strings.EqualFold(cfgKey, attrKey) && strings.EqualFold(cfgBase, attrBase) {
 				return entry
 			}
+			// After token refresh, api_key becomes a JWT that won't match
+			// the empty config key. Fall back to base_url matching.
+			if cfgKey == "" && strings.EqualFold(cfgBase, attrBase) {
+				return entry
+			}
 			continue
 		}
 		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
@@ -985,10 +1133,10 @@ func (e *TraeExecutor) resolveTraeKey(auth *cliproxyauth.Auth) *config.TraeKey {
 
 // resolveModelNames maps a client-facing model name to Trae Gateway config/model names.
 // It first looks up the alias in the configured model list, then falls back to defaults.
-func (e *TraeExecutor) resolveModelNames(requestModel string, traeKey *config.TraeKey) (configName, modelName string) {
+func (e *TraeExecutor) resolveModelNames(requestModel string, traeKey *config.TraeKey) (configName, modelName, displayName string) {
 	requestModel = strings.TrimSpace(requestModel)
 	if requestModel == "" {
-		return "deepseek-V4-Pro", "deepseek-V4-Pro__v2"
+		return "deepseek-V4-Pro", "deepseek-V4-Pro__v2", "DeepSeek-V4-Pro"
 	}
 	if traeKey != nil {
 		for _, m := range traeKey.Models {
@@ -996,17 +1144,18 @@ func (e *TraeExecutor) resolveModelNames(requestModel string, traeKey *config.Tr
 			if alias != "" && strings.EqualFold(alias, requestModel) {
 				configName = strings.TrimSpace(m.ConfigName)
 				modelName = strings.TrimSpace(m.ModelName)
+				displayName = strings.TrimSpace(m.DisplayName)
 				if configName == "" {
 					configName = "deepseek-V4-Pro"
 				}
 				if modelName == "" {
 					modelName = alias
 				}
-				return configName, modelName
+				return configName, modelName, displayName
 			}
 		}
 	}
-	return "deepseek-V4-Pro", requestModel
+	return "deepseek-V4-Pro", requestModel, ""
 }
 
 // buildOpenAIGatewayRequest translates an OpenAI-format request to Trae Gateway format.
@@ -1022,7 +1171,11 @@ func (e *TraeExecutor) buildOpenAIGatewayRequest(req cliproxyexecutor.Request, o
 	}
 
 	traeKey := e.resolveTraeKey(auth)
-	configName, modelName := e.resolveModelNames(body.Model, traeKey)
+	requestModel := body.Model
+	if traeKey != nil && traeKey.Prefix != "" {
+		requestModel = strings.TrimPrefix(requestModel, traeKey.Prefix+"/")
+	}
+	configName, modelName, displayName := e.resolveModelNames(requestModel, traeKey)
 
 	messages := make([]traeGatewayMessage, 0, len(body.Messages))
 	for _, rawMsg := range body.Messages {
@@ -1043,7 +1196,7 @@ func (e *TraeExecutor) buildOpenAIGatewayRequest(req cliproxyexecutor.Request, o
 
 	// Truncate to prevent risk-control blocks — Trae Gateway rejects
 	// excessively long conversation histories (>400+ messages).
-	const maxRecent = 60
+	const maxRecent = 400
 	messages = truncateMessages(messages, maxRecent)
 
 	conversationID := e.deriveConversationID(opts)
@@ -1055,6 +1208,7 @@ func (e *TraeExecutor) buildOpenAIGatewayRequest(req cliproxyexecutor.Request, o
 		SessionID:          sessionID,
 		PromptCompletionID: pcid,
 		ModelName:          modelName,
+		DisplayName:        displayName,
 		Messages:           messages,
 		Tools:              normalizeOpenAITools(body.Tools),
 		UserInput:          lastUserMessageText(messages),
@@ -1074,7 +1228,11 @@ func (e *TraeExecutor) buildAnthropicGatewayRequest(req cliproxyexecutor.Request
 	}
 
 	traeKey := e.resolveTraeKey(auth)
-	configName, modelName := e.resolveModelNames(body.Model, traeKey)
+	requestModel := body.Model
+	if traeKey != nil && traeKey.Prefix != "" {
+		requestModel = strings.TrimPrefix(requestModel, traeKey.Prefix+"/")
+	}
+	configName, modelName, displayName := e.resolveModelNames(requestModel, traeKey)
 
 	messages := make([]traeGatewayMessage, 0, len(body.Messages)+1)
 	// Handle system field: may be a string or array of system blocks
@@ -1115,7 +1273,7 @@ func (e *TraeExecutor) buildAnthropicGatewayRequest(req cliproxyexecutor.Request
 
 	// Truncate to prevent risk-control blocks — Trae Gateway rejects
 	// excessively long conversation histories (>400+ messages).
-	const maxRecent = 60
+	const maxRecent = 400
 	messages = truncateMessages(messages, maxRecent)
 
 	conversationID := e.deriveConversationID(opts)
@@ -1127,6 +1285,7 @@ func (e *TraeExecutor) buildAnthropicGatewayRequest(req cliproxyexecutor.Request
 		SessionID:          sessionID,
 		PromptCompletionID: pcid,
 		ModelName:          modelName,
+		DisplayName:        displayName,
 		Messages:           messages,
 		Tools:              convertAnthropicToolsToOpenAI(body.Tools),
 		UserInput:          lastUserMessageText(messages),
@@ -1173,10 +1332,10 @@ func (e *TraeExecutor) runTraeGateway(ctx context.Context, host, token string, b
 		return nil, errors.New("gateway token is required")
 	}
 	if body.ConversationID == "" {
-		body.ConversationID = newTraeID()
+		body.ConversationID = NewTraeID()
 	}
 	if body.SessionID == "" {
-		body.SessionID = newTraeID()
+		body.SessionID = NewTraeID()
 	}
 
 	encoded, err := json.Marshal(body)
@@ -1214,20 +1373,13 @@ func (e *TraeExecutor) runTraeGateway(ctx context.Context, host, token string, b
 
 	httpReq.Header.Set("Authorization", "Cloud-IDE-JWT "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("X-App-Id", "7b3f9dc2-8a4e-5c6d-2f1b-9e4a3c5b7df0")
 	httpReq.Header.Set("X-Ide-Function", "chat")
 	httpReq.Header.Set("X-Ide-Version", "99.99.99")
 	httpReq.Header.Set("X-Ide-Version-Code", "20260206")
-	httpReq.Header.Set("X-Flow-Traceparent", generateTraceparent())
-	httpReq.Header.Set("X-7c9b3e1f2d6h8k0p5", "x9n2q7r1t5w3y6z0")
-	// agent_loop_id must be stable per session (matching real Trae capture behaviour),
-	// derived from session_id so it doesn't change every request.
-	agentLoopID := deriveSessionScopedID(body.SessionID, "loop")
-	// user_prompt_submit_id must be unique per request — the real Trae client
-	// generates a new submission ID for each user prompt turn. Using a stable
-	// session-scoped ID here may prevent upstream KV cache from initializing.
-	submitID := newTraeID()
+	httpReq.Header.Set("X-Flow-Traceparent", GenerateTraceparent())
+	// agent_loop_id must equal user_prompt_submit_id (matching real Trae capture behaviour).
+	agentLoopID := body.SessionID
 	extra, _ := json.Marshal(map[string]any{
 		"agent_loop_id":         agentLoopID,
 		"api_host":              host,
@@ -1235,14 +1387,15 @@ func (e *TraeExecutor) runTraeGateway(ctx context.Context, host, token string, b
 		"base_url":              host + "/trae-cli/api/v1/llm/proxy",
 		"config_name":           body.ConfigName,
 		"config_source":         1,
-		"display_name":          body.ConfigName,
+		"display_name":          body.DisplayName,
 		"model_name":            body.ModelName,
 		"proxy_version":         "",
 		"real_api_key":          "",
 		"real_base_url":         "",
-		"session_id":            body.SessionID,
-		"user_prompt_submit_id": submitID,
+		"session_id":            body.ConversationID,
+		"user_prompt_submit_id": body.SessionID,
 	})
+	log.Infof("[Trae] extra=%s", string(extra))
 	httpReq.Header.Set("Extra", string(extra))
 
 	client := traeHTTPClient
@@ -1406,7 +1559,13 @@ func readTraeGatewayEvents(ctx context.Context, body io.Reader, onEvent func(gat
 			log.Infof("[Trae] token_usage prompt=%d completion=%d total=%d cache_read=%d cache_write=%d cache_hit_rate=%.1f%%",
 				tu.PromptTokens, tu.CompletionTokens, tu.TotalTokens,
 				tu.CacheReadInputTokens, tu.CacheCreationInputTokens, cacheHitRate)
-			gatewayEvent := gatewayStreamEvent{Usage: &usageInfo{PromptTokens: tu.PromptTokens, CompletionTokens: tu.CompletionTokens, TotalTokens: tu.TotalTokens}}
+			gatewayEvent := gatewayStreamEvent{Usage: &usageInfo{
+				PromptTokens:             tu.PromptTokens,
+				CompletionTokens:         tu.CompletionTokens,
+				TotalTokens:              tu.TotalTokens,
+				CacheReadInputTokens:     tu.CacheReadInputTokens,
+				CacheCreationInputTokens: tu.CacheCreationInputTokens,
+			}}
 			events = append(events, gatewayEvent)
 			if onEvent != nil {
 				if err := onEvent(gatewayEvent); err != nil {
@@ -1472,6 +1631,8 @@ type traeGatewayRequestBody struct {
 	SessionID          string               `json:"session_id"`
 	Tools              json.RawMessage      `json:"tools,omitempty"`
 	UserInput          string               `json:"user_input"`
+	// DisplayName is the human-readable display name (for Extra header, not sent as JSON body).
+	DisplayName string `json:"-"`
 }
 
 // traeGatewayMessage mirrors the message object Trae Gateway expects.
@@ -1506,10 +1667,10 @@ type traeGatewayDoneEvent struct {
 }
 
 type traeGatewayTokenUsage struct {
-	PromptTokens            int `json:"prompt_tokens"`
-	CompletionTokens        int `json:"completion_tokens"`
-	TotalTokens             int `json:"total_tokens"`
-	CacheReadInputTokens    int `json:"cache_read_input_tokens"`
+	PromptTokens             int `json:"prompt_tokens"`
+	CompletionTokens         int `json:"completion_tokens"`
+	TotalTokens              int `json:"total_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
@@ -1600,9 +1761,11 @@ func (a *gatewayToolCallAccumulator) add(calls []traeGatewayToolCall) {
 }
 
 type usageInfo struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
+	PromptTokens             int
+	CompletionTokens         int
+	TotalTokens              int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
 }
 
 // --- Response types ---
@@ -1630,9 +1793,11 @@ type traeOpenAIMessage struct {
 }
 
 type traeOpenAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens             int `json:"prompt_tokens"`
+	CompletionTokens         int `json:"completion_tokens"`
+	TotalTokens              int `json:"total_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 type traeOpenAIStreamChunk struct {
@@ -1689,8 +1854,10 @@ type traeAnthropicContentBlock struct {
 }
 
 type traeAnthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 // --- Helpers ---
@@ -2003,7 +2170,7 @@ func estimateTokens(text string) int {
 	return cjk + ascii/4 + 1
 }
 
-func newTraeID() string {
+func NewTraeID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -2013,12 +2180,12 @@ func newTraeID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// deriveSessionScopedID derives a stable ID scoped to a session.
+// DeriveSessionScopedID derives a stable ID scoped to a session.
 // Uses the session_id as seed so it stays constant across all requests
 // within the same session. Different scopes produce different IDs.
-func deriveSessionScopedID(sessionID, scope string) string {
+func DeriveSessionScopedID(sessionID, scope string) string {
 	if sessionID == "" {
-		return newTraeID()
+		return NewTraeID()
 	}
 	h := sha256.Sum256([]byte("trae-" + scope + ":" + sessionID))
 	h[6] = (h[6] & 0x0f) | 0x50 // Version 5
@@ -2027,7 +2194,7 @@ func deriveSessionScopedID(sessionID, scope string) string {
 		h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
 }
 
-func generateTraceparent() string {
+func GenerateTraceparent() string {
 	var traceID [16]byte
 	var parentID [8]byte
 	rand.Read(traceID[:])

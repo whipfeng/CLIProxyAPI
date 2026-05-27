@@ -410,7 +410,14 @@ func (k ClaudeKey) GetBaseURL() string { return k.BaseURL }
 // TraeKey represents the configuration for a Trae Gateway API key.
 type TraeKey struct {
 	// APIKey is the Trae Gateway JWT token.
+	// When omitted and RefreshToken is set, the JWT will be automatically
+	// obtained via ExchangeToken.
 	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// RefreshToken is a long-lived refresh token used to obtain a JWT via
+	// the ExchangeToken API. When set, the executor automatically calls
+	// ExchangeToken to populate APIKey at startup and on token expiry.
+	RefreshToken string `yaml:"refresh-token" json:"refresh-token"`
 
 	// Priority controls selection preference when multiple credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
@@ -435,13 +442,17 @@ type TraeKey struct {
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 }
 
-func (k TraeKey) GetAPIKey() string  { return k.APIKey }
-func (k TraeKey) GetBaseURL() string { return k.BaseURL }
+func (k TraeKey) GetAPIKey() string       { return k.APIKey }
+func (k TraeKey) GetBaseURL() string      { return k.BaseURL }
+func (k TraeKey) GetRefreshToken() string { return k.RefreshToken }
 
 // TraeModel describes a mapping between a client-facing model name and Trae Gateway identifiers.
 type TraeModel struct {
 	// Name is the client-facing model name.
 	Name string `yaml:"name" json:"name"`
+
+	// DisplayName is the human-readable display name from Trae Gateway.
+	DisplayName string `yaml:"display-name" json:"display-name"`
 
 	// ConfigName is the Trae Gateway config name.
 	ConfigName string `yaml:"config-name" json:"config-name"`

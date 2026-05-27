@@ -6,10 +6,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 )
 
 // Generic helpers for list[string]
@@ -1176,6 +1176,7 @@ func (h *Handler) PutTraeKeys(c *gin.Context) {
 func (h *Handler) PatchTraeKey(c *gin.Context) {
 	type traeKeyPatch struct {
 		APIKey         *string             `json:"api-key"`
+		RefreshToken   *string             `json:"refresh-token"`
 		Prefix         *string             `json:"prefix"`
 		BaseURL        *string             `json:"base-url"`
 		ProxyURL       *string             `json:"proxy-url"`
@@ -1213,6 +1214,9 @@ func (h *Handler) PatchTraeKey(c *gin.Context) {
 	entry := h.cfg.TraeKey[targetIndex]
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+	}
+	if body.Value.RefreshToken != nil {
+		entry.RefreshToken = strings.TrimSpace(*body.Value.RefreshToken)
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
@@ -1293,6 +1297,7 @@ func normalizeTraeKey(entry *config.TraeKey) {
 		return
 	}
 	entry.APIKey = strings.TrimSpace(entry.APIKey)
+	entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
 	entry.Prefix = strings.TrimSpace(entry.Prefix)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
@@ -1305,6 +1310,7 @@ func normalizeTraeKey(entry *config.TraeKey) {
 	for i := range entry.Models {
 		model := entry.Models[i]
 		model.Name = strings.TrimSpace(model.Name)
+		model.DisplayName = strings.TrimSpace(model.DisplayName)
 		model.ConfigName = strings.TrimSpace(model.ConfigName)
 		model.ModelName = strings.TrimSpace(model.ModelName)
 		if model.Name == "" && model.ModelName == "" {
@@ -1318,10 +1324,11 @@ func normalizeTraeKey(entry *config.TraeKey) {
 // TestTraeKey sends a lightweight request to Trae Gateway to validate credentials.
 func (h *Handler) TestTraeKey(c *gin.Context) {
 	var body struct {
-		BaseURL    string `json:"baseUrl"`
-		APIKey     string `json:"apiKey"`
-		ConfigName string `json:"configName"`
-		ModelName  string `json:"modelName"`
+		BaseURL      string `json:"baseUrl"`
+		APIKey       string `json:"apiKey"`
+		RefreshToken string `json:"refreshToken"`
+		ConfigName   string `json:"configName"`
+		ModelName    string `json:"modelName"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
@@ -1333,8 +1340,9 @@ func (h *Handler) TestTraeKey(c *gin.Context) {
 		baseURL = "https://console.enterprise.trae.cn"
 	}
 	apiKey := strings.TrimSpace(body.APIKey)
-	if apiKey == "" {
-		c.JSON(400, gin.H{"error": "api key is required"})
+	refreshToken := strings.TrimSpace(body.RefreshToken)
+	if apiKey == "" && refreshToken == "" {
+		c.JSON(400, gin.H{"error": "api key or refresh token is required"})
 		return
 	}
 
@@ -1349,13 +1357,33 @@ func (h *Handler) TestTraeKey(c *gin.Context) {
 		return
 	}
 
+	// If only refresh token is provided, exchange it for a JWT
+	if apiKey == "" && refreshToken != "" {
+		result, err := executor.ExchangeTraeToken(c.Request.Context(), baseURL, refreshToken)
+		if err != nil {
+			c.JSON(200, gin.H{"success": false, "message": fmt.Sprintf("token exchange failed: %v", err)})
+			return
+		}
+		apiKey = result.Data.Token
+	}
+
+	sessionID := executor.NewTraeID()
+	conversationID := executor.NewTraeID()
+	agentLoopID := sessionID
+
 	payload := map[string]interface{}{
 		"config_name":     configName,
-		"conversation_id": fmt.Sprintf("test-%d", time.Now().UnixNano()),
+		"conversation_id": conversationID,
 		"model_name":      modelName,
-		"session_id":      fmt.Sprintf("test-%d", time.Now().UnixNano()),
+		"session_id":      sessionID,
+		"user_input":      "Hi",
 		"messages": []map[string]interface{}{
-			{"role": "user", "content": []map[string]string{{"type": "text", "text": "Hi"}}},
+			{
+				"role":         "user",
+				"content":      []map[string]string{{"type": "text", "text": "Hi"}},
+				"tool_calls":   []interface{}{},
+				"tool_call_id": "",
+			},
 		},
 	}
 	encoded, err := json.Marshal(payload)
@@ -1363,6 +1391,22 @@ func (h *Handler) TestTraeKey(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed to build request"})
 		return
 	}
+
+	extra, _ := json.Marshal(map[string]interface{}{
+		"agent_loop_id":         agentLoopID,
+		"api_host":              baseURL,
+		"api_key":               apiKey,
+		"base_url":              baseURL + "/trae-cli/api/v1/llm/proxy",
+		"config_name":           configName,
+		"config_source":         1,
+		"display_name":          configName,
+		"model_name":            modelName,
+		"proxy_version":         "",
+		"real_api_key":          "",
+		"real_base_url":         "",
+		"session_id":            conversationID,
+		"user_prompt_submit_id": sessionID,
+	})
 
 	url := strings.TrimRight(baseURL, "/") + "/api/ide/v2/llm_raw_chat"
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, strings.NewReader(string(encoded)))
@@ -1372,14 +1416,14 @@ func (h *Handler) TestTraeKey(c *gin.Context) {
 	}
 	req.Header.Set("Authorization", "Cloud-IDE-JWT "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("X-App-Id", "7b3f9dc2-8a4e-5c6d-2f1b-9e4a3c5b7df0")
 	req.Header.Set("X-Ide-Function", "chat")
 	req.Header.Set("X-Ide-Version", "99.99.99")
 	req.Header.Set("X-Ide-Version-Code", "20260206")
+	req.Header.Set("X-Flow-Traceparent", executor.GenerateTraceparent())
+	req.Header.Set("Extra", string(extra))
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := executor.TraeHTTPClient.Do(req)
 	if err != nil {
 		c.JSON(200, gin.H{"success": false, "message": err.Error()})
 		return
@@ -1429,6 +1473,93 @@ func (h *Handler) TestTraeKey(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"success": true, "message": "connection successful"})
+}
+
+// ImportTraeModels calls the Trae get_config_list API and returns model suggestions.
+func (h *Handler) ImportTraeModels(c *gin.Context) {
+	var body struct {
+		BaseURL      string `json:"baseUrl"`
+		APIKey       string `json:"apiKey"`
+		RefreshToken string `json:"refreshToken"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+
+	baseURL := strings.TrimSpace(body.BaseURL)
+	if baseURL == "" {
+		baseURL = "https://console.enterprise.trae.cn"
+	}
+	apiKey := strings.TrimSpace(body.APIKey)
+	refreshToken := strings.TrimSpace(body.RefreshToken)
+
+	configs, jwt, err := executor.FetchTraeConfigList(c.Request.Context(), baseURL, apiKey, refreshToken)
+	if err != nil {
+		c.JSON(200, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+
+	// parseDisplayName extracts display_name from display_config JSON.
+	parseDisplayName := func(raw json.RawMessage) string {
+		if len(raw) == 0 {
+			return ""
+		}
+		var obj struct {
+			DisplayName string `json:"display_name"`
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return ""
+		}
+		return obj.DisplayName
+	}
+
+	type modelSuggestion struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"displayName"`
+		ConfigName  string `json:"configName"`
+		ModelName   string `json:"modelName"`
+	}
+	var models []modelSuggestion
+	for _, cfg := range configs {
+		if cfg.Usage != "chat_completion" && cfg.Usage != "" {
+			continue
+		}
+		if cfg.ConfigName == "custom_model_placeholder" || cfg.ConfigName == "summary" {
+			continue
+		}
+		displayName := parseDisplayName(cfg.DisplayConfig)
+		if displayName == "" {
+			displayName = cfg.ConfigName
+		}
+		for _, detail := range cfg.ModelDetailList {
+			modelName := detail.ModelName
+			if modelName == "" {
+				modelName = cfg.ConfigName
+			}
+			models = append(models, modelSuggestion{
+				Name:        cfg.ConfigName,
+				DisplayName: displayName,
+				ConfigName:  cfg.ConfigName,
+				ModelName:   modelName,
+			})
+		}
+		// Configs without model_detail_list (like kimi-k2, deepseek-V3.1)
+		if len(cfg.ModelDetailList) == 0 && cfg.Usage == "chat_completion" {
+			models = append(models, modelSuggestion{
+				Name:        cfg.ConfigName,
+				DisplayName: displayName,
+				ConfigName:  cfg.ConfigName,
+				ModelName:   cfg.ConfigName,
+			})
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"models":  models,
+		"apiKey":  jwt,
+	})
 }
 
 func normalizeVertexCompatKey(entry *config.VertexCompatKey) {

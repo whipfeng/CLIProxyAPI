@@ -644,6 +644,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/trae-api-key", s.mgmt.PatchTraeKey)
 		mgmt.DELETE("/trae-api-key", s.mgmt.DeleteTraeKey)
 		mgmt.POST("/trae-api-key/test", s.mgmt.TestTraeKey)
+		mgmt.POST("/trae-api-key/import", s.mgmt.ImportTraeModels)
 
 		mgmt.GET("/openai-compatibility", s.mgmt.GetOpenAICompat)
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)

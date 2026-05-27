@@ -333,13 +333,20 @@ func (s *ConfigSynthesizer) synthesizeTraeKeys(ctx *SynthesisContext) []*coreaut
 	for i := range cfg.TraeKey {
 		entry := cfg.TraeKey[i]
 		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
+		refreshToken := strings.TrimSpace(entry.RefreshToken)
+		if key == "" && refreshToken == "" {
 			continue
 		}
 		prefix := strings.TrimSpace(entry.Prefix)
 		base := strings.TrimSpace(entry.BaseURL)
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		id, token := idGen.Next("trae:apikey", key, base)
+
+		// Use API key for stable ID, fall back to refresh token.
+		idSource := key
+		if idSource == "" {
+			idSource = refreshToken
+		}
+		id, token := idGen.Next("trae:apikey", idSource, base)
 		attrs := map[string]string{
 			"source":  fmt.Sprintf("config:trae[%s]", token),
 			"api_key": key,
@@ -362,8 +369,12 @@ func (s *ConfigSynthesizer) synthesizeTraeKeys(ctx *SynthesisContext) []*coreaut
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
+			Metadata:   map[string]any{},
 			CreatedAt:  now,
 			UpdatedAt:  now,
+		}
+		if refreshToken != "" {
+			a.Metadata["refresh_token"] = refreshToken
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
 		out = append(out, a)

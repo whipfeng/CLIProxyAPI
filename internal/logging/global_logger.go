@@ -94,7 +94,7 @@ func SetupBaseLogger() {
 		gin.DefaultErrorWriter = ginErrorWriter
 		gin.DebugPrintFunc = func(format string, values ...interface{}) {
 			format = strings.TrimRight(format, "\r\n")
-			log.StandardLogger().Infof(format, values...)
+			log.StandardLogger().Debugf(format, values...)
 		}
 
 		log.RegisterExitHandler(closeLogOutputs)
