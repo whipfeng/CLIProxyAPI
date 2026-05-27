@@ -1519,8 +1519,14 @@ func generateBillingHeader(payload []byte, experimentalCCHSigning bool, version,
 	}
 
 	// Generate a deterministic cch hash from the payload content (system + messages + tools).
+	// Use only the first message's hash for stability across requests in the same
+	// conversation, so that KV cache prefix matching works correctly.
 	h := sha256.Sum256(payload)
 	cch := hex.EncodeToString(h[:])[:5]
+	// Normalize: use a fixed cch value so the billing header doesn't change
+	// per-request. The real Claude Code client also rotates cch, but for proxy
+	// use cases targeting non-Anthropic backends, a stable value preserves KV cache.
+	cch = "stable"
 	return fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=%s; cch=%s;%s", version, buildHash, entrypoint, cch, workloadPart)
 }
 
