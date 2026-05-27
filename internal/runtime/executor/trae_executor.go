@@ -1244,7 +1244,12 @@ func (e *TraeExecutor) buildAnthropicGatewayRequest(req cliproxyexecutor.Request
 	if len(body.System) > 0 && string(body.System) != "null" {
 		var sysText string
 		if err := json.Unmarshal(body.System, &sysText); err == nil && strings.TrimSpace(sysText) != "" {
-			messages = append(messages, traeGatewayMessage{Role: "system", Content: []traeGatewayContentBlock{{Type: "text", Text: sysText}}})
+			// Skip pure billing-header system messages (e.g. "x-anthropic-billing-header: ...").
+			// They contain only routing/billing metadata with dynamic fields (cch=, cc_version)
+			// that change every request, breaking KV cache prefix matching and wasting tokens.
+			if !strings.Contains(sysText, "x-anthropic-billing-header") {
+				messages = append(messages, traeGatewayMessage{Role: "system", Content: []traeGatewayContentBlock{{Type: "text", Text: sysText}}})
+			}
 		} else {
 			var sysBlocks []struct {
 				Type string `json:"type"`
@@ -1252,7 +1257,7 @@ func (e *TraeExecutor) buildAnthropicGatewayRequest(req cliproxyexecutor.Request
 			}
 			if err := json.Unmarshal(body.System, &sysBlocks); err == nil {
 				for _, b := range sysBlocks {
-					if strings.TrimSpace(b.Text) != "" {
+					if strings.TrimSpace(b.Text) != "" && !strings.Contains(b.Text, "x-anthropic-billing-header") {
 						messages = append(messages, traeGatewayMessage{Role: "system", Content: []traeGatewayContentBlock{{Type: "text", Text: b.Text}}})
 					}
 				}
@@ -1318,6 +1323,24 @@ func (e *TraeExecutor) runTraeGateway(ctx context.Context, host, token string, b
 	if body.SessionID == "" {
 		body.SessionID = NewTraeID()
 	}
+
+	// Diagnostic: compute per-message hashes to detect prefix divergence across turns.
+	// This helps identify exactly which message breaks the KV cache prefix.
+	msgHashes := make([]string, len(body.Messages))
+	for i, msg := range body.Messages {
+		msgJSON, _ := json.Marshal(msg)
+		msgHashes[i] = fmt.Sprintf("%x", sha256.Sum256(msgJSON))[:16]
+		// Log first 3 messages content (truncated) to identify dynamic fields
+		if i < 3 {
+			trunc := string(msgJSON)
+			if len(trunc) > 300 {
+				trunc = trunc[:300] + "..."
+			}
+			log.Infof("[Trae] prefix_msg[%d] role=%s hash=%s content=%s", i, msg.Role, msgHashes[i], trunc)
+		}
+	}
+	log.Infof("[Trae] prefix_diag session=%s msg_count=%d pcid=%d hashes=%v",
+		body.SessionID, len(body.Messages), body.PromptCompletionID, msgHashes)
 
 	encoded, err := json.Marshal(body)
 	if err != nil {

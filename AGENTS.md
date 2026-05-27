@@ -75,8 +75,9 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
   - Deploy target: `C:\Users\Docker\Desktop\Workspace\proxy-ai-model\static\management.html`
 - Copy ONLY the base binary (without `_run` suffix) to the release directory
 - The watchdog manages `_run` files automatically — it copies the base binary as `cli-proxy-win-amd64_run.exe` and runs it
-- To restart: kill the `cli-proxy-win-amd64_run.exe` process, watchdog will restart with the new base binary
+- To restart: kill the **`cli-proxy-win-amd64_run.exe`** process (NOT cli-proxy-win-amd64.exe!), watchdog will restart with the new base binary
 - Do NOT create or copy `_run` files directly; do NOT start the watchdog yourself
+- **进程名是 `cli-proxy-win-amd64_run.exe`（带 _run 后缀）**，不是 `cli-proxy-win-amd64.exe`！taskkill 要用对名字
 
 ### 部署文件复制方法（Windows 路径含空格，Bash 工具引号处理不稳定）
 **必须使用 PowerShell 脚本方式复制，不要用 Bash 工具直接 copy/xcopy：**
@@ -143,6 +144,11 @@ $r.Content.Contains('contextLength')
 - 后端 `go build` 没执行（代码改了但二进制没更新）→ 重新编译再部署
 - 前端 `dist` 目录有缓存 → 删除 `dist/` 再 `npm run build`
 - 进程没重启 → `_run` 时间戳与 base 不一致说明用的是旧版本
+- **前端部署到错误路径** → 前端是单个文件 `static/management.html`，不是 `dist/` 或 `management/` 目录！
+- **后端只复制了一个 exe** → 必须同时复制 `_run.exe` 和 `cli-proxy-win-amd64.exe`
+- **PowerShell 中文路径编码问题** → 用 Node.js 脚本替代 PowerShell（写入 `.js` 文件后 `node xxx.js` 执行）
+- **数据转换层丢失字段** → 检查 `normalizeModelAliases()` 等转换函数是否提取了新字段
+- **JSON tag 字段名不匹配** → 后端 snake_case (`context-length`) vs 前端 camelCase (`contextLength`)
 
 ### Whistle 环境
 - Whistle 代理地址: `http://10.11.61.34:8899` (no TLS, plain HTTP)
