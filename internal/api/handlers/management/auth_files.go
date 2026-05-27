@@ -302,6 +302,9 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 		if m.OwnedBy != "" {
 			entry["owned_by"] = m.OwnedBy
 		}
+		if m.ContextLength > 0 {
+			entry["context_length"] = m.ContextLength
+		}
 		result = append(result, entry)
 	}
 

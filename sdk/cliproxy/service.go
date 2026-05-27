@@ -1012,6 +1012,12 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 							UserDefined: false,
 							Thinking:    thinking,
 						})
+						// Copy ContextLength from static registry if available
+						if m.Name != "" {
+							if upstream := registry.LookupStaticModelInfo(m.Name); upstream != nil && upstream.ContextLength > 0 {
+								ms[len(ms)-1].ContextLength = upstream.ContextLength
+							}
+						}
 					}
 					// Register and return
 					if len(ms) > 0 {
@@ -1434,8 +1440,13 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 			UserDefined: true,
 		}
 		if name != "" {
-			if upstream := registry.LookupStaticModelInfo(name); upstream != nil && upstream.Thinking != nil {
-				info.Thinking = upstream.Thinking
+			if upstream := registry.LookupStaticModelInfo(name); upstream != nil {
+				if upstream.Thinking != nil {
+					info.Thinking = upstream.Thinking
+				}
+				if upstream.ContextLength > 0 {
+					info.ContextLength = upstream.ContextLength
+				}
 			}
 		}
 		out = append(out, info)

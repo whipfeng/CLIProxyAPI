@@ -1,0 +1,2 @@
+$c = Get-NetTCPConnection -LocalPort 8317 -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($c) { Stop-Process -Id $c.OwningProcess -Force; Write-Output "Killed PID $($c.OwningProcess)" } else { Write-Output "No process on 8317" }

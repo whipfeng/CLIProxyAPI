@@ -1,0 +1,40 @@
+HTTP/1.1 200 OK
+Server: volcalb
+Date: Thu, 21 May 2026 11:05:56 GMT
+Content-Type: text/event-stream
+Transfer-Encoding: chunked
+Connection: close
+Cache-Control: no-cache
+x-send-ts: 1779361556362
+x-recv-ts: 1779361553902
+X-Tt-Logid: 202605211905530100021430048741C12
+Server-Timing: tt_agw; dur=2488
+Vary: Accept-Encoding
+
+event: metadata
+data: {"model":"ali-deepseek-v4-pro","session_id":"5536114d-4396-44ca-bec1-40e62afd74b3","prompt_completion_id":0,"ab_versions":null,"app_version":"","ide_version":null,"ide_version_type":null}
+
+event: timing_cost
+data: {"name":"llm_raw_chat_v2","preprocess_timing":41,"postprocess_timing":4,"queue_timing":0,"platform_first_token_timing":2418,"account_type":"","is_retry":false,"middleware_processing_time":26,"server_processing_time":2490,"first_sse_event_time":2486,"preprocessing_detail":{"check_risk":0,"build_llm_prompt":0,"chat_completion_prepare":3,"other":38},"platform_detail":{"preprocess_timing":25,"first_token_timing":2360,"network_latency":31,"provider_first_token":0,"provider_network_latency":0,"other":2},"post_processing_detail":{"post_security_check":4,"other":0},"provider_model_name":"ali-deepseek-v4-pro"}
+
+event: output
+data: {"response":"","reasoning_content":"The","tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"","reasoning_content":" user is asking what model I am. I should answer directly.","tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"我是 **DeepSeek-V4-Pro** 模型。有什么我可以帮你处理的","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"吗？","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: extra_info
+data: {"model":"ali-deepseek-v4-pro","version":1,"content":"{\"reasoning_content\":\"The user is asking what model I am. I should answer directly.\"}","input_token":14,"expire_time":2725441557195}
+
+event: token_usage
+data: {"name":"","prompt_tokens":13330,"completion_tokens":34,"total_tokens":13364,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"reasoning_tokens":14,"prompt_tokens_total":0,"completion_tokens_total":0,"total_tokens_total":0,"cache_creation_input_tokens_total":0,"cache_read_input_tokens_total":0,"reasoning_tokens_total":0,"cluster":"normal_context"}
+
+event: done
+data: {"finish_reason":"stop"}
+

@@ -1,0 +1,112 @@
+HTTP/1.1 200 OK
+Server: volcalb
+Date: Fri, 22 May 2026 11:32:53 GMT
+Content-Type: text/event-stream
+Transfer-Encoding: chunked
+Connection: close
+Cache-Control: no-cache
+x-send-ts: 1779449573477
+x-recv-ts: 1779449572031
+X-Tt-Logid: 202605221932520100031452010101FDE
+Server-Timing: tt_agw; dur=1466
+Vary: Accept-Encoding
+
+event: metadata
+data: {"model":"kimi-k2.6","session_id":"f7705c0e-e3ea-444a-b74f-5dcd69b302b0","prompt_completion_id":0,"ab_versions":null,"app_version":"","ide_version":null,"ide_version_type":null}
+
+event: timing_cost
+data: {"name":"llm_raw_chat_v2","preprocess_timing":44,"postprocess_timing":3,"queue_timing":0,"platform_first_token_timing":1400,"account_type":"","is_retry":false,"middleware_processing_time":19,"server_processing_time":1468,"first_sse_event_time":1463,"preprocessing_detail":{"check_risk":0,"build_llm_prompt":0,"chat_completion_prepare":16,"other":28},"platform_detail":{"preprocess_timing":40,"first_token_timing":1316,"network_latency":42,"provider_first_token":0,"provider_network_latency":0,"other":2},"post_processing_detail":{"post_security_check":3,"other":0},"provider_model_name":"kimi-k2.6"}
+
+event: output
+data: {"response":"这个","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"工程下的一级目录如下：\n\n| 目录名","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":" | 说明 |\n|--------|------|\n","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"| `docs` | 文档目录 |\n|","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":" `feishu-bridge` | 飞","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"书桥接服务 |\n| `helm` |","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":" Helm Chart目录 |\n| `k8sconfig","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"` | K8s配置 |\n| `ma","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"as-cat-public` | 公共模块（","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"Java） |\n| `maas_migu`","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":" | 主后端服务（Java/Gradle）","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":" |\n| `maas_migu_delivery` |","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":" 交付相关（Java/Gradle） |\n|","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":" `mass_migu_front` | 前端项目","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"（React/TypeScript） |\n| `node","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"_modules` | Node依赖 |\n| `specs","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"` | 规格说明文档 |\n| `sql","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"` | SQL脚本 |\n| `svn` |","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":" SVN相关 |\n| `tmp` | 临时","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"文件 |\n| `train_bff` | ","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"训练BFF服务（Python/FastAPI）","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":" |\n\n主要业务模块是：\n","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"- **maas_migu** - Java后端","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"主服务\n- **maas_migu_delivery","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"** - Java交付服务  \n- **mass_m","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"igu_front** - React前端\n- **train","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"_bff** - Python训练BFF服务\n","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"- **maas-cat-public** - Java","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"公共模块","reasoning_content":null,"tool_calls":null,"multimodal_contents":null,"phase":null}
+
+event: token_usage
+data: {"name":"","prompt_tokens":25796,"completion_tokens":271,"total_tokens":26067,"cache_creation_input_tokens":0,"cache_read_input_tokens":24576,"reasoning_tokens":0,"prompt_tokens_total":0,"completion_tokens_total":0,"total_tokens_total":0,"cache_creation_input_tokens_total":0,"cache_read_input_tokens_total":0,"reasoning_tokens_total":0,"cluster":"normal_context"}
+
+event: done
+data: {"finish_reason":"stop"}
+

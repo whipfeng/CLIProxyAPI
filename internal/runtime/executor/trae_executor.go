@@ -148,10 +148,6 @@ var (
 		KeepAlive: 30 * time.Second,
 	}
 
-	// maxGatewayBodySize is the maximum request body size (bytes) sent to Trae Gateway.
-	// When exceeded, CLIProxy returns HTTP 413 to the client so Claude Code / Trae IDE
-	// can trigger its own context compaction instead of CLIProxy silently truncating.
-	maxGatewayBodySize = 2 * 1024 * 1024 // 2 MB
 	traeTransport = &http.Transport{
 		DialContext:           baseDialer.DialContext,
 		MaxIdleConns:          100,
@@ -453,10 +449,6 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, err
 	}
 	gatewayReqBytes, _ := json.Marshal(gatewayReq)
-	if len(gatewayReqBytes) > maxGatewayBodySize {
-		log.Infof("[Trae] Execute body too large (%d bytes > %d), returning 413 to trigger client compaction", len(gatewayReqBytes), maxGatewayBodySize)
-		return resp, statusErr{code: http.StatusRequestEntityTooLarge, msg: fmt.Sprintf("request body too large (%d bytes), please compact conversation context", len(gatewayReqBytes))}
-	}
 	traeLogf("[Execute] gateway_request=%s", truncateLogBody(gatewayReqBytes))
 
 	var events []gatewayStreamEvent
@@ -636,10 +628,6 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, err
 	}
 	gatewayReqBytes, _ := json.Marshal(gatewayReq)
-	if len(gatewayReqBytes) > maxGatewayBodySize {
-		log.Infof("[Trae] ExecuteStream body too large (%d bytes > %d), returning 413 to trigger client compaction", len(gatewayReqBytes), maxGatewayBodySize)
-		return nil, statusErr{code: http.StatusRequestEntityTooLarge, msg: fmt.Sprintf("request body too large (%d bytes), please compact conversation context", len(gatewayReqBytes))}
-	}
 	traeLogf("[ExecuteStream] gateway_request=%s", truncateLogBody(gatewayReqBytes))
 	log.Infof("[Trae] conversation_id=%s session_id=%s msg_count=%d pcid=%d", gatewayReq.ConversationID, gatewayReq.SessionID, len(gatewayReq.Messages), gatewayReq.PromptCompletionID)
 

@@ -1,0 +1,34 @@
+HTTP/1.1 200 OK
+Server: volcalb
+Date: Fri, 22 May 2026 11:32:46 GMT
+Content-Type: text/event-stream
+Transfer-Encoding: chunked
+Connection: close
+Cache-Control: no-cache
+x-send-ts: 1779449566350
+x-recv-ts: 1779449564603
+X-Tt-Logid: 2026052219324401000314520558162A5
+Server-Timing: tt_agw; dur=1769
+Vary: Accept-Encoding
+
+event: metadata
+data: {"model":"kimi-k2.6","session_id":"f7705c0e-e3ea-444a-b74f-5dcd69b302b0","prompt_completion_id":0,"ab_versions":null,"app_version":"","ide_version":null,"ide_version_type":null}
+
+event: timing_cost
+data: {"name":"llm_raw_chat_v2","preprocess_timing":66,"postprocess_timing":4,"queue_timing":0,"platform_first_token_timing":1680,"account_type":"","is_retry":false,"middleware_processing_time":20,"server_processing_time":1771,"first_sse_event_time":1766,"preprocessing_detail":{"check_risk":0,"build_llm_prompt":0,"chat_completion_prepare":36,"other":30},"platform_detail":{"preprocess_timing":36,"first_token_timing":1599,"network_latency":41,"provider_first_token":0,"provider_network_latency":0,"other":4},"post_processing_detail":{"post_security_check":3,"other":1},"provider_model_name":"kimi-k2.6"}
+
+event: output
+data: {"response":"","reasoning_content":null,"tool_calls":[{"index":0,"id":"Bash:2","type":"function","function_call":{"name":"Bash","arguments":"{\"command\": \"dir /b /","partial_arguments":null}}],"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"","reasoning_content":null,"tool_calls":[{"index":0,"id":"","type":"","function_call":{"name":"","arguments":"ad\", \"description\": \"列出工程下的一级","partial_arguments":null}}],"multimodal_contents":null,"phase":null}
+
+event: output
+data: {"response":"","reasoning_content":null,"tool_calls":[{"index":0,"id":"","type":"","function_call":{"name":"","arguments":"目录\"}","partial_arguments":null}}],"multimodal_contents":null,"phase":null}
+
+event: token_usage
+data: {"name":"","prompt_tokens":25653,"completion_tokens":32,"total_tokens":25685,"cache_creation_input_tokens":0,"cache_read_input_tokens":24576,"reasoning_tokens":0,"prompt_tokens_total":0,"completion_tokens_total":0,"total_tokens_total":0,"cache_creation_input_tokens_total":0,"cache_read_input_tokens_total":0,"reasoning_tokens_total":0,"cluster":"normal_context"}
+
+event: done
+data: {"finish_reason":"tool_calls"}
+
