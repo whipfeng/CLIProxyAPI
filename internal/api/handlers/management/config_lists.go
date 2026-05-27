@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 )
 
@@ -1515,10 +1516,11 @@ func (h *Handler) ImportTraeModels(c *gin.Context) {
 	}
 
 	type modelSuggestion struct {
-		Name        string `json:"name"`
-		DisplayName string `json:"displayName"`
-		ConfigName  string `json:"configName"`
-		ModelName   string `json:"modelName"`
+		Name         string `json:"name"`
+		DisplayName  string `json:"displayName"`
+		ConfigName   string `json:"configName"`
+		ModelName    string `json:"modelName"`
+		ContextLength int64 `json:"context_length,omitempty"`
 	}
 	var models []modelSuggestion
 	for _, cfg := range configs {
@@ -1537,21 +1539,33 @@ func (h *Handler) ImportTraeModels(c *gin.Context) {
 			if modelName == "" {
 				modelName = cfg.ConfigName
 			}
-			models = append(models, modelSuggestion{
+			suggestion := modelSuggestion{
 				Name:        cfg.ConfigName,
 				DisplayName: displayName,
 				ConfigName:  cfg.ConfigName,
 				ModelName:   modelName,
-			})
+			}
+			if detail.PromptMaxTokens > 0 {
+				suggestion.ContextLength = int64(detail.PromptMaxTokens)
+			} else if upstream := registry.LookupStaticModelInfo(modelName); upstream != nil && upstream.ContextLength > 0 {
+				suggestion.ContextLength = int64(upstream.ContextLength)
+			} else if upstream := registry.LookupStaticModelInfo(cfg.ConfigName); upstream != nil && upstream.ContextLength > 0 {
+				suggestion.ContextLength = int64(upstream.ContextLength)
+			}
+			models = append(models, suggestion)
 		}
 		// Configs without model_detail_list (like kimi-k2, deepseek-V3.1)
 		if len(cfg.ModelDetailList) == 0 && cfg.Usage == "chat_completion" {
-			models = append(models, modelSuggestion{
+			suggestion := modelSuggestion{
 				Name:        cfg.ConfigName,
 				DisplayName: displayName,
 				ConfigName:  cfg.ConfigName,
 				ModelName:   cfg.ConfigName,
-			})
+			}
+			if upstream := registry.LookupStaticModelInfo(cfg.ConfigName); upstream != nil && upstream.ContextLength > 0 {
+				suggestion.ContextLength = int64(upstream.ContextLength)
+			}
+			models = append(models, suggestion)
 		}
 	}
 

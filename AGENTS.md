@@ -78,7 +78,71 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - To restart: kill the `cli-proxy-win-amd64_run.exe` process, watchdog will restart with the new base binary
 - Do NOT create or copy `_run` files directly; do NOT start the watchdog yourself
 
-## Packet Capture Analysis
+### 部署文件复制方法（Windows 路径含空格，Bash 工具引号处理不稳定）
+**必须使用 PowerShell 脚本方式复制，不要用 Bash 工具直接 copy/xcopy：**
+
+1. 将以下内容写入 `C:\Users\Docker\Desktop\Workspace\proxy-ai-model\deploy.ps1`：
+```powershell
+[System.IO.File]::Copy('C:\Users\Docker\vs-project\workspace\CLIProxyAPI\cli-proxy-win-amd64.exe', 'C:\Users\Docker\Desktop\Workspace\proxy-ai-model\cli-proxy-win-amd64.exe', $true)
+Write-Output "Backend copied OK"
+
+[System.IO.File]::Copy('C:\Users\Docker\vs-project\workspace\Cli-Proxy-API-Management-Center\dist\index.html', 'C:\Users\Docker\Desktop\Workspace\proxy-ai-model\static\management.html', $true)
+Write-Output "Frontend copied OK"
+
+$dst = Get-Item -LiteralPath 'C:\Users\Docker\Desktop\Workspace\proxy-ai-model\cli-proxy-win-amd64.exe'
+$dst2 = Get-Item -LiteralPath 'C:\Users\Docker\Desktop\Workspace\proxy-ai-model\static\management.html'
+Write-Output "DST: $($dst.Length) bytes, $($dst.LastWriteTime)"
+Write-Output "DST2: $($dst2.Length) bytes, $($dst2.LastWriteTime)"
+```
+
+2. 执行脚本：
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\Docker\Desktop\Workspace\proxy-ai-model\deploy.ps1
+```
+
+3. 验证时间戳与源文件一致后再重启服务
+
+### 部署验证（必须执行！）
+**部署后必须验证文件更新和进程重启，否则修改不会生效！**
+
+1. 验证部署文件时间戳：
+```powershell
+$base = Get-Item 'C:\Users\Docker\Desktop\Workspace\proxy-ai-model\cli-proxy-win-amd64.exe'
+$front = Get-Item 'C:\Users\Docker\Desktop\Workspace\proxy-ai-model\static\management.html'
+Write-Output "Backend: $($base.LastWriteTime) | Frontend: $($front.LastWriteTime)"
+```
+
+2. 验证运行中的进程是否使用了新二进制：
+```powershell
+$p = Get-Process -Name 'cli-proxy-win-amd64_run' -ErrorAction SilentlyContinue
+if ($p) {
+    $runFi = Get-Item 'C:\Users\Docker\Desktop\Workspace\proxy-ai-model\cli-proxy-win-amd64_run.exe'
+    Write-Output "_run timestamp: $($runFi.LastWriteTime)"
+}
+```
+   - 如果 `_run` 时间戳 **早于** `cli-proxy-win-amd64.exe`，说明运行的是旧版本，需要杀掉进程让 watchdog 重启
+
+3. 强制重启（如果时间戳不匹配）：
+```powershell
+Stop-Process -Name 'cli-proxy-win-amd64_run' -Force
+# watchdog 会自动用新的 base 二进制复制并启动 _run
+Start-Sleep -Seconds 5
+# 确认新进程启动
+Get-Process -Name 'cli-proxy-win-amd64_run' | Select-Object Id, ProcessName, StartTime
+```
+
+4. 验证服务返回新内容：
+```powershell
+$r = Invoke-WebRequest -Uri 'http://127.0.0.1:<port>/management.html' -TimeoutSec 5
+Write-Output ("Status: $($r.StatusCode) Length: $($r.Content.Length)")
+# 检查是否包含最新代码特征
+$r.Content.Contains('contextLength')
+```
+
+**常见失败原因：**
+- 后端 `go build` 没执行（代码改了但二进制没更新）→ 重新编译再部署
+- 前端 `dist` 目录有缓存 → 删除 `dist/` 再 `npm run build`
+- 进程没重启 → `_run` 时间戳与 base 不一致说明用的是旧版本
 
 ### Whistle 环境
 - Whistle 代理地址: `http://10.11.61.34:8899` (no TLS, plain HTTP)
