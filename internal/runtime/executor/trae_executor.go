@@ -147,6 +147,11 @@ var (
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
+
+	// maxGatewayBodySize is the maximum request body size (bytes) sent to Trae Gateway.
+	// When exceeded, CLIProxy returns HTTP 413 to the client so Claude Code / Trae IDE
+	// can trigger its own context compaction instead of CLIProxy silently truncating.
+	maxGatewayBodySize = 2 * 1024 * 1024 // 2 MB
 	traeTransport = &http.Transport{
 		DialContext:           baseDialer.DialContext,
 		MaxIdleConns:          100,
@@ -193,6 +198,15 @@ func traeLogf(format string, args ...interface{}) {
 	fmt.Fprintf(traeLogFile, format, args...)
 	traeLogFile.WriteString("\n")
 	traeLogFile.Sync()
+}
+
+// truncateLogBody truncates a byte slice for logging, keeping at most 2000 chars.
+func truncateLogBody(b []byte) string {
+	s := string(b)
+	if len(s) > 2000 {
+		return s[:2000] + "...(truncated)"
+	}
+	return s
 }
 
 // NewTraeExecutor creates a new Trae executor.
@@ -425,7 +439,7 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	from := opts.SourceFormat
 	isAnthropic := from == sdktranslator.FormatClaude
 	traeLogf("[Execute] model=%s format=%s stream=false", req.Model, from)
-	traeLogf("[Execute] client_payload=%s", string(req.Payload))
+	traeLogf("[Execute] client_payload=%s", truncateLogBody(req.Payload))
 	execStart := time.Now()
 	log.Infof("[Trae] Execute model=%s format=%s", req.Model, from)
 
@@ -439,7 +453,11 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, err
 	}
 	gatewayReqBytes, _ := json.Marshal(gatewayReq)
-	traeLogf("[Execute] gateway_request=%s", string(gatewayReqBytes))
+	if len(gatewayReqBytes) > maxGatewayBodySize {
+		log.Infof("[Trae] Execute body too large (%d bytes > %d), returning 413 to trigger client compaction", len(gatewayReqBytes), maxGatewayBodySize)
+		return resp, statusErr{code: http.StatusRequestEntityTooLarge, msg: fmt.Sprintf("request body too large (%d bytes), please compact conversation context", len(gatewayReqBytes))}
+	}
+	traeLogf("[Execute] gateway_request=%s", truncateLogBody(gatewayReqBytes))
 
 	var events []gatewayStreamEvent
 	cacheKey := traeCacheKey(gatewayReq)
@@ -603,7 +621,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	from := opts.SourceFormat
 	isAnthropic := from == sdktranslator.FormatClaude
 	traeLogf("[ExecuteStream] model=%s format=%s stream=true", req.Model, from)
-	traeLogf("[ExecuteStream] client_payload=%s", string(req.Payload))
+	traeLogf("[ExecuteStream] client_payload=%s", truncateLogBody(req.Payload))
 	execStreamStart := time.Now()
 	log.Infof("[Trae] ExecuteStream model=%s format=%s", req.Model, from)
 
@@ -618,7 +636,11 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, err
 	}
 	gatewayReqBytes, _ := json.Marshal(gatewayReq)
-	traeLogf("[ExecuteStream] gateway_request=%s", string(gatewayReqBytes))
+	if len(gatewayReqBytes) > maxGatewayBodySize {
+		log.Infof("[Trae] ExecuteStream body too large (%d bytes > %d), returning 413 to trigger client compaction", len(gatewayReqBytes), maxGatewayBodySize)
+		return nil, statusErr{code: http.StatusRequestEntityTooLarge, msg: fmt.Sprintf("request body too large (%d bytes), please compact conversation context", len(gatewayReqBytes))}
+	}
+	traeLogf("[ExecuteStream] gateway_request=%s", truncateLogBody(gatewayReqBytes))
 	log.Infof("[Trae] conversation_id=%s session_id=%s msg_count=%d pcid=%d", gatewayReq.ConversationID, gatewayReq.SessionID, len(gatewayReq.Messages), gatewayReq.PromptCompletionID)
 
 	chunks := make(chan cliproxyexecutor.StreamChunk, 64)
@@ -1194,11 +1216,6 @@ func (e *TraeExecutor) buildOpenAIGatewayRequest(req cliproxyexecutor.Request, o
 		return traeGatewayRequestBody{}, errors.New("message content is required")
 	}
 
-	// Truncate to prevent risk-control blocks — Trae Gateway rejects
-	// excessively long conversation histories (>400+ messages).
-	const maxRecent = 400
-	messages = truncateMessages(messages, maxRecent)
-
 	conversationID := e.deriveConversationID(opts)
 	sessionID := e.deriveSessionID(opts)
 	pcid := e.pcidStore.get(sessionID)
@@ -1271,11 +1288,6 @@ func (e *TraeExecutor) buildAnthropicGatewayRequest(req cliproxyexecutor.Request
 		return traeGatewayRequestBody{}, errors.New("message content is required")
 	}
 
-	// Truncate to prevent risk-control blocks — Trae Gateway rejects
-	// excessively long conversation histories (>400+ messages).
-	const maxRecent = 400
-	messages = truncateMessages(messages, maxRecent)
-
 	conversationID := e.deriveConversationID(opts)
 	sessionID := e.deriveSessionID(opts)
 	pcid := e.pcidStore.get(sessionID)
@@ -1305,25 +1317,6 @@ func lastUserMessageText(messages []traeGatewayMessage) string {
 		}
 	}
 	return ""
-}
-
-// truncateMessages keeps the first system message (if any) and the last n
-// messages to avoid hitting rate/risk controls on long conversations.
-func truncateMessages(messages []traeGatewayMessage, n int) []traeGatewayMessage {
-	if len(messages) <= n {
-		return messages
-	}
-	// Preserve the first system message if present
-	var sys *traeGatewayMessage
-	if len(messages) > 0 && messages[0].Role == "system" {
-		msg := messages[0]
-		sys = &msg
-	}
-	recent := messages[len(messages)-n:]
-	if sys != nil && recent[0].Role != "system" {
-		recent = append([]traeGatewayMessage{*sys}, recent...)
-	}
-	return recent
 }
 
 // runTraeGateway sends a request to Trae Gateway and reads SSE events.
@@ -1365,7 +1358,7 @@ func (e *TraeExecutor) runTraeGateway(ctx context.Context, host, token string, b
 	traceCtx := httptrace.WithClientTrace(ctx, trace)
 
 	url := strings.TrimRight(host, "/") + "/api/ide/v2/llm_raw_chat"
-	traeLogf("[runTraeGateway] url=%s body=%s", url, string(encoded))
+	traeLogf("[runTraeGateway] url=%s body=%s", url, truncateLogBody(encoded))
 	httpReq, err := http.NewRequestWithContext(traceCtx, http.MethodPost, url, bytes.NewReader(encoded))
 	if err != nil {
 		return nil, err

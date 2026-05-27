@@ -54,6 +54,19 @@ func init() {
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
+	// Catch panics to prevent console window from closing immediately on crash.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("Fatal panic: %v", r)
+			fmt.Fprintf(os.Stderr, "\nFatal error: %v\n", r)
+			fmt.Fprintf(os.Stderr, "Press Enter to exit...")
+			// Wait for user input before closing the console window.
+			var input string
+			fmt.Scanln(&input)
+			os.Exit(1)
+		}
+	}()
+
 	fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 
 	// Command-line flags to control the application's behavior.
