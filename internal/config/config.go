@@ -459,6 +459,9 @@ type TraeModel struct {
 
 	// ModelName is the Trae Gateway upstream model name.
 	ModelName string `yaml:"model-name" json:"model-name"`
+
+	// ContextLength is the model's maximum context window size in tokens.
+	ContextLength int64 `yaml:"context-length,omitempty" json:"contextLength,omitempty"`
 }
 
 func (m TraeModel) GetName() string  { return m.ModelName }

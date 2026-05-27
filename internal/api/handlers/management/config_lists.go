@@ -1148,7 +1148,93 @@ func normalizeCodexKey(entry *config.CodexKey) {
 
 // trae-api-key: []TraeKey
 func (h *Handler) GetTraeKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"trae-api-key": h.cfg.TraeKey})
+	keys := h.cfg.TraeKey
+
+	// Build a lookup map from Trae's getconfig API for contextLength enrichment.
+	// This is needed because saved configs may not have contextLength (added later),
+	// and Trae models are not in the static registry.
+	type clInfo struct {
+		configName      string
+		promptMaxTokens int
+	}
+	var clMap map[string]int // configName -> promptMaxTokens
+
+	for i := range keys {
+		hasMissing := false
+		for j := range keys[i].Models {
+			if keys[i].Models[j].ContextLength <= 0 {
+				hasMissing = true
+				break
+			}
+		}
+		if !hasMissing {
+			continue
+		}
+
+		// Call Trae getconfig API to fetch prompt_max_tokens
+		baseURL := keys[i].BaseURL
+		if baseURL == "" {
+			baseURL = "https://console.enterprise.trae.cn"
+		}
+		configs, _, err := executor.FetchTraeConfigList(c.Request.Context(), baseURL, keys[i].APIKey, keys[i].RefreshToken)
+		if err != nil || len(configs) == 0 {
+			continue
+		}
+		if clMap == nil {
+			clMap = make(map[string]int)
+		}
+		for _, cfg := range configs {
+			if cfg.Usage != "chat_completion" && cfg.Usage != "" {
+				continue
+			}
+			for _, detail := range cfg.ModelDetailList {
+				if detail.PromptMaxTokens > 0 {
+					modelName := detail.ModelName
+					if modelName == "" {
+						modelName = cfg.ConfigName
+					}
+					clMap[modelName] = detail.PromptMaxTokens
+					clMap[cfg.ConfigName] = detail.PromptMaxTokens
+				}
+			}
+			// Also handle configs without ModelDetailList
+			if len(cfg.ModelDetailList) == 0 && cfg.Usage == "chat_completion" {
+				// Will fall through to static registry below
+			}
+		}
+	}
+
+	// Enrich contextLength for saved models that lack it
+	for i := range keys {
+		for j := range keys[i].Models {
+			if keys[i].Models[j].ContextLength <= 0 {
+				m := keys[i].Models[j]
+				enriched := false
+
+				// Try Trae API data first
+				if clMap != nil {
+					if v, ok := clMap[m.ModelName]; ok && v > 0 {
+						keys[i].Models[j].ContextLength = int64(v)
+						enriched = true
+					} else if v, ok := clMap[m.ConfigName]; ok && v > 0 {
+						keys[i].Models[j].ContextLength = int64(v)
+						enriched = true
+					}
+				}
+
+				// Fallback to static registry
+				if !enriched {
+					if upstream := registry.LookupStaticModelInfo(m.ModelName); upstream != nil && upstream.ContextLength > 0 {
+						keys[i].Models[j].ContextLength = int64(upstream.ContextLength)
+					} else if upstream := registry.LookupStaticModelInfo(m.ConfigName); upstream != nil && upstream.ContextLength > 0 {
+						keys[i].Models[j].ContextLength = int64(upstream.ContextLength)
+					}
+				}
+			}
+		}
+	}
+
+	c.JSON(200, gin.H{"trae-api-key": keys})
 }
 func (h *Handler) PutTraeKeys(c *gin.Context) {
 	data, err := c.GetRawData()
