@@ -1,7 +1,5 @@
-fix: strip billing-header from client requests in Claude executor
+fix: prevent empty system[] after stripping billing-header (causes 400 error)
 
-Claude Code client sends x-anthropic-billing-header in system[] with
-dynamic fields (cch=, cc_version) that change every request. Even after
-removing our own injection, the client's own billing-header still breaks
-KV cache for Kimi and other providers. Add stripBillingHeaderFromSystem()
-to filter these blocks before sending upstream.
+When all system blocks were billing headers, stripping them produced an empty
+array which Kimi rejected with 400 Invalid request. Keep a minimal empty
+text block when system would become empty.

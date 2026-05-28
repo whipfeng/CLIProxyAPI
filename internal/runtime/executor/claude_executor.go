@@ -1638,26 +1638,34 @@ func stripBillingHeaderFromSystem(payload []byte) []byte {
 	}
 
 	if system.IsArray() {
+		arr := system.Array()
 		var filtered []string
-		system.ForEach(func(_, part gjson.Result) bool {
+		hasBillingHeader := false
+		for _, part := range arr {
 			txt := part.Get("text").String()
-			if !strings.HasPrefix(txt, "x-anthropic-billing-header:") {
-				raw, err := sjson.SetBytes([]byte{}, "type", part.Get("type").String())
-				if err == nil {
-					raw, _ = sjson.SetBytes(raw, "text", txt)
-					filtered = append(filtered, string(raw))
-				}
+			if strings.HasPrefix(txt, "x-anthropic-billing-header:") {
+				hasBillingHeader = true
+				continue // strip billing header block
 			}
-			return true
-		})
-		if len(filtered) < len(system.Array()) {
+			raw, err := sjson.SetBytes([]byte{}, "type", part.Get("type").String())
+			if err == nil {
+				raw, _ = sjson.SetBytes(raw, "text", txt)
+				filtered = append(filtered, string(raw))
+			}
+		}
+		// Only update if we actually stripped something AND have remaining blocks.
+		// If all blocks were billing headers, keep one empty text block to avoid empty system[].
+		if hasBillingHeader && len(filtered) < len(arr) {
+			if len(filtered) == 0 {
+				filtered = append(filtered, `{"type":"text","text":""}`)
+			}
 			result := "[" + strings.Join(filtered, ",") + "]"
 			payload, _ = sjson.SetRawBytes(payload, "system", []byte(result))
 		}
 	} else if system.Type == gjson.String {
 		txt := system.String()
 		if strings.HasPrefix(txt, "x-anthropic-billing-header:") {
-			payload, _ = sjson.SetRawBytes(payload, "system", []byte("[]"))
+			payload, _ = sjson.SetRawBytes(payload, "system", []byte(`[{"type":"text","text":""}]`))
 		}
 	}
 
