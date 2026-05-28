@@ -150,6 +150,30 @@ $r.Content.Contains('contextLength')
 - **数据转换层丢失字段** → 检查 `normalizeModelAliases()` 等转换函数是否提取了新字段
 - **JSON tag 字段名不匹配** → 后端 snake_case (`context-length`) vs 前端 camelCase (`contextLength`)
 
+### KV Cache 前缀稳定性（重要经验！2026-05-28）
+
+**问题根因：** Claude Code 在 system 字段发送 `x-anthropic-billing-header` 消息，包含动态字段（`cch=随机hex`, `cc_version` 变化），导致每条请求的 prefix_msg[0] hash 不同，KV cache 命中率从 93% 掉到 18%。
+
+**两条修复路径：**
+1. **Trae Executor** (`trae_executor.go`): **过滤掉**整条 billing-header system 消息
+   - 路径 1: system 为字符串时，`strings.Contains(sysText, "x-anthropic-billing-header")` 检查后跳过
+   - 路径 2: system 为数组时，每个 block 同样检查
+   - 原因：Trae 是消费者，转发到 Trae Gateway，billing-header 对网关无用
+2. **Claude Executor** (`claude_executor.go`): **稳定化 cch 字段**
+   - `generateBillingHeader()` 中 `cch = "stable"` 替换动态 hash
+   - 原因：Claude 可能代理到非 Anthropic 后端，需要保留 billing-header 结构但消除动态性
+
+**排查方法：**
+- 日志加 `prefix_msg[N]` 和 `prefix_diag` 打印每条消息的 sha256 hash 前16位
+- 对比多次请求的 hash[0] 是否相同，不同则说明前缀不稳定
+- 看 `cache_hit_rate` 字段确认实际缓存效果
+
+**审查其他 Executor 的结论：**
+- 只有处理 Anthropic 格式且保留原始 system 内容的 executor 受影响
+- Claude executor 是生成者（自己构建 system），但 cch 动态变化仍需稳定化
+- 其他 executor（OpenAI/Codex/Gemini）用不同协议，不受影响
+- Kimi executor 继承 ClaudeExecutor 但转为 OpenAI 格式，低风险
+
 ### Whistle 环境
 - Whistle 代理地址: `http://10.11.61.34:8899` (no TLS, plain HTTP)
 - Web UI: `http://10.11.61.34:8899/#network`
