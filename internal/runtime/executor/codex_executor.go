@@ -694,7 +694,9 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
 	ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
 
-	if strings.Contains(r.Header.Get("User-Agent"), "Mac OS") {
+	// Set Session_id: prefer stable cache ID (SHA1-based) for prompt cache
+	// consistency. Only fall back to random UUID if no cache ID available.
+	if r.Header.Get("Session_id") == "" {
 		misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
 	}
 
