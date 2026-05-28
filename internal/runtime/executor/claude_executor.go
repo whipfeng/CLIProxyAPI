@@ -1536,43 +1536,16 @@ func checkSystemInstructionsWithMode(payload []byte, strictMode bool) []byte {
 
 // checkSystemInstructionsWithSigningMode injects Claude Code-style system blocks:
 //
-//	system[0]: billing header (no cache_control)
-//	system[1]: agent identifier (cache_control ephemeral, scope=org)
-//	system[2]: core intro prompt (cache_control ephemeral, scope=global)
-//	system[3]: system instructions (no cache_control)
-//	system[4]: doing tasks (no cache_control)
-//	system[5]: user system messages moved to first user message
+//	system[0]: agent identifier (cache_control ephemeral, scope=org)
+//	system[1]: core intro prompt (cache_control ephemeral, scope=global)
+//	system[2]: system instructions (no cache_control)
+//	system[3]: doing tasks (no cache_control)
+//	system[4]: user system messages moved to first user message
+//
+// Note: billing-header injection removed — it contained dynamic fields (cch=, cc_version)
+// that changed every request, breaking KV cache prefix matching for all providers.
 func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, experimentalCCHSigning bool, oauthMode bool, version, entrypoint, workload string) []byte {
-	system := gjson.GetBytes(payload, "system")
-
-	// Extract original message text for fingerprint computation (before billing injection).
-	// Use the first system text block's content as the fingerprint source.
-	messageText := ""
-	if system.IsArray() {
-		system.ForEach(func(_, part gjson.Result) bool {
-			if part.Get("type").String() == "text" {
-				messageText = part.Get("text").String()
-				return false
-			}
-			return true
-		})
-	} else if system.Type == gjson.String {
-		messageText = system.String()
-	}
-
-	// Skip if already injected
-	firstText := gjson.GetBytes(payload, "system.0.text").String()
-	if strings.HasPrefix(firstText, "x-anthropic-billing-header:") {
-		return payload
-	}
-
-	billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
-	billingBlock := buildTextBlock(billingText, nil)
-
 	// Build system blocks matching real Claude Code structure.
-	// Important: Claude Code's internal cacheScope='org' does NOT serialize to
-	// scope='org' in the API request. Only scope='global' is sent explicitly.
-	// The system prompt prefix block is sent without cache_control.
 	agentBlock := buildTextBlock("You are Claude Code, Anthropic's official CLI for Claude.", nil)
 	staticPrompt := strings.Join([]string{
 		helps.ClaudeCodeIntro,
@@ -1583,14 +1556,15 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 	}, "\n\n")
 	staticBlock := buildTextBlock(staticPrompt, nil)
 
-	systemResult := "[" + billingBlock + "," + agentBlock + "," + staticBlock + "]"
+	systemResult := "[" + agentBlock + "," + staticBlock + "]"
 	payload, _ = sjson.SetRawBytes(payload, "system", []byte(systemResult))
 
 	// Collect user system instructions and prepend to first user message
 	if !strictMode {
 		var userSystemParts []string
-		if system.IsArray() {
-			system.ForEach(func(_, part gjson.Result) bool {
+		origSystem := gjson.GetBytes(payload, "system")
+		if origSystem.IsArray() {
+			origSystem.ForEach(func(_, part gjson.Result) bool {
 				if part.Get("type").String() == "text" {
 					txt := strings.TrimSpace(part.Get("text").String())
 					if txt != "" {
@@ -1599,8 +1573,8 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 				}
 				return true
 			})
-		} else if system.Type == gjson.String && strings.TrimSpace(system.String()) != "" {
-			userSystemParts = append(userSystemParts, strings.TrimSpace(system.String()))
+		} else if origSystem.Type == gjson.String && strings.TrimSpace(origSystem.String()) != "" {
+			userSystemParts = append(userSystemParts, strings.TrimSpace(origSystem.String()))
 		}
 
 		if len(userSystemParts) > 0 {
