@@ -389,6 +389,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
 	}
 
+	// Strip billing-header system blocks from client requests.
+	// They contain dynamic fields (cch=, cc_version) that change every request,
+	// breaking KV cache prefix matching for all providers (Kimi, etc.)
+	bodyForUpstream = stripBillingHeaderFromSystem(bodyForUpstream)
+
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyForUpstream))
 	if err != nil {
@@ -1621,6 +1626,42 @@ func buildTextBlock(text string, cacheControl map[string]string) string {
 		block, _ = sjson.SetRawBytes(block, "cache_control", []byte(cc))
 	}
 	return string(block)
+}
+
+// stripBillingHeaderFromSystem removes x-anthropic-billing-header system blocks
+// from the request payload. These blocks contain dynamic fields (cch=, cc_version)
+// that change every request, breaking KV cache prefix matching for all providers.
+func stripBillingHeaderFromSystem(payload []byte) []byte {
+	system := gjson.GetBytes(payload, "system")
+	if !system.Exists() {
+		return payload
+	}
+
+	if system.IsArray() {
+		var filtered []string
+		system.ForEach(func(_, part gjson.Result) bool {
+			txt := part.Get("text").String()
+			if !strings.HasPrefix(txt, "x-anthropic-billing-header:") {
+				raw, err := sjson.SetBytes([]byte{}, "type", part.Get("type").String())
+				if err == nil {
+					raw, _ = sjson.SetBytes(raw, "text", txt)
+					filtered = append(filtered, string(raw))
+				}
+			}
+			return true
+		})
+		if len(filtered) < len(system.Array()) {
+			result := "[" + strings.Join(filtered, ",") + "]"
+			payload, _ = sjson.SetRawBytes(payload, "system", []byte(result))
+		}
+	} else if system.Type == gjson.String {
+		txt := system.String()
+		if strings.HasPrefix(txt, "x-anthropic-billing-header:") {
+			payload, _ = sjson.SetRawBytes(payload, "system", []byte("[]"))
+		}
+	}
+
+	return payload
 }
 
 // prependToFirstUserMessage prepends text content to the first user message.

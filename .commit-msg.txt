@@ -1,9 +1,7 @@
-fix: remove billing-header injection from Claude executor for KV cache stability
+fix: strip billing-header from client requests in Claude executor
 
-The x-anthropic-billing-header system block contained dynamic fields (cch=,
-cc_version with buildHash) that changed every request, breaking KV cache
-prefix matching for ALL providers (Claude, Kimi, Trae, etc.).
-
-Instead of trying to stabilize individual fields, remove the entire
-billing-header injection. It's a routing/billing metadata block that has
-no functional value for proxy use and only harms cache performance.
+Claude Code client sends x-anthropic-billing-header in system[] with
+dynamic fields (cch=, cc_version) that change every request. Even after
+removing our own injection, the client's own billing-header still breaks
+KV cache for Kimi and other providers. Add stripBillingHeaderFromSystem()
+to filter these blocks before sending upstream.
