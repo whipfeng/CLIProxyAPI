@@ -389,11 +389,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
 	}
 
-	// Strip billing-header system blocks from client requests.
-	// They contain dynamic fields (cch=, cc_version) that change every request,
-	// breaking KV cache prefix matching for all providers (Kimi, etc.)
-	bodyForUpstream = stripBillingHeaderFromSystem(bodyForUpstream)
-
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyForUpstream))
 	if err != nil {
