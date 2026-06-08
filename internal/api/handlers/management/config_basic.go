@@ -294,14 +294,25 @@ func normalizeRoutingStrategy(strategy string) (string, bool) {
 func (h *Handler) GetRoutingStrategy(c *gin.Context) {
 	strategy, ok := normalizeRoutingStrategy(h.cfg.Routing.Strategy)
 	if !ok {
-		c.JSON(200, gin.H{"strategy": strings.TrimSpace(h.cfg.Routing.Strategy)})
-		return
+		strategy = strings.TrimSpace(h.cfg.Routing.Strategy)
 	}
-	c.JSON(200, gin.H{"strategy": strategy})
+	sessionAffinity := h.cfg.Routing.SessionAffinity || h.cfg.Routing.ClaudeCodeSessionAffinity
+	ttl := strings.TrimSpace(h.cfg.Routing.SessionAffinityTTL)
+	if ttl == "" {
+		ttl = "1h"
+	}
+	c.JSON(200, gin.H{
+		"strategy":           strategy,
+		"session_affinity":   sessionAffinity,
+		"session_affinity_ttl": ttl,
+	})
 }
+
 func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 	var body struct {
-		Value *string `json:"value"`
+		Value             *string `json:"value"`
+		SessionAffinity   *bool   `json:"session_affinity,omitempty"`
+		SessionAffinityTTL *string `json:"session_affinity_ttl,omitempty"`
 	}
 	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -313,6 +324,25 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 		return
 	}
 	h.cfg.Routing.Strategy = normalized
+	if body.SessionAffinity != nil {
+		h.cfg.Routing.SessionAffinity = *body.SessionAffinity
+	}
+	if body.SessionAffinityTTL != nil {
+		if ttl := strings.TrimSpace(*body.SessionAffinityTTL); ttl != "" {
+			if _, err := time.ParseDuration(ttl); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid session_affinity_ttl format"})
+				return
+			}
+			h.cfg.Routing.SessionAffinityTTL = ttl
+		} else if h.cfg.Routing.SessionAffinity || (body.SessionAffinity != nil && *body.SessionAffinity) {
+			// Clear empty TTL when affinity is enabled: reset to default
+			h.cfg.Routing.SessionAffinityTTL = "1h"
+		}
+	}
+	// Ensure TTL has a valid default when affinity is enabled
+	if h.cfg.Routing.SessionAffinity && strings.TrimSpace(h.cfg.Routing.SessionAffinityTTL) == "" {
+		h.cfg.Routing.SessionAffinityTTL = "1h"
+	}
 	h.persist(c)
 }
 

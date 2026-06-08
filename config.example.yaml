@@ -108,7 +108,12 @@ routing:
   # metadata.user_id, conversation_id, or first few messages hash.
   # Automatic failover is always enabled when bound auth becomes unavailable.
   session-affinity: false # default: false
-  # How long session-to-auth bindings are retained. Default: 1h
+  # How long session-to-auth bindings are retained.
+  # Recommended values:
+  #   "1h"   : Default, suitable for short sessions
+  #   "24h"  : Recommended for KV cache optimization (long-lived LLM conversations)
+  #   "168h" : One week, maximum cache retention
+  # Accepts duration strings like "30m", "2h30m", "24h".
   session-affinity-ttl: "1h"
 
 # When true, enable authentication for the WebSocket API (/v1/ws).

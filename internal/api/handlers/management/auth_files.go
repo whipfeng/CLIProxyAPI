@@ -416,6 +416,22 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if !auth.NextRetryAfter.IsZero() {
 		entry["next_retry_after"] = auth.NextRetryAfter
 	}
+	// Health status summary
+	entry["health_status"] = computeAuthHealthStatus(auth)
+	if auth.LastError != nil {
+		entry["last_error"] = gin.H{
+			"code":    auth.LastError.HTTPStatus,
+			"message": truncateStr(auth.LastError.Message, 200),
+		}
+	}
+	if auth.Quota.Exceeded {
+		entry["quota"] = gin.H{
+			"exceeded":       true,
+			"reason":         auth.Quota.Reason,
+			"next_recover_at": auth.Quota.NextRecoverAt,
+			"backoff_level":  auth.Quota.BackoffLevel,
+		}
+	}
 	if path != "" {
 		entry["path"] = path
 		entry["source"] = "file"
@@ -554,6 +570,70 @@ func isUnsafeAuthFileName(name string) bool {
 		return true
 	}
 	return false
+}
+
+// computeAuthHealthStatus returns aggregated health status for an auth credential.
+func computeAuthHealthStatus(auth *coreauth.Auth) gin.H {
+	now := time.Now()
+	status := gin.H{
+		"overall":      "healthy",
+		"is_available": true,
+	}
+	if auth.Disabled {
+		status["overall"] = "disabled"
+		status["is_available"] = false
+		return status
+	}
+	if auth.Unavailable {
+		status["overall"] = "unhealthy"
+		status["is_available"] = false
+		if !auth.NextRetryAfter.IsZero() {
+			status["cooldown_until"] = auth.NextRetryAfter
+			status["cooldown_remaining"] = auth.NextRetryAfter.Sub(now).String()
+		}
+		return status
+	}
+	if !auth.NextRetryAfter.IsZero() && auth.NextRetryAfter.After(now) {
+		status["overall"] = "cooldown"
+		status["is_available"] = false
+		status["cooldown_until"] = auth.NextRetryAfter
+		status["cooldown_remaining"] = auth.NextRetryAfter.Sub(now).String()
+		return status
+	}
+	if len(auth.ModelStates) > 0 {
+		unavail := 0
+		for _, ms := range auth.ModelStates {
+			if ms.Unavailable || (!ms.NextRetryAfter.IsZero() && ms.NextRetryAfter.After(now)) {
+				unavail++
+			}
+		}
+		if unavail > 0 {
+			ratio := float64(unavail) / float64(len(auth.ModelStates))
+			if ratio >= 0.8 {
+				status["overall"] = "unhealthy"
+				status["is_available"] = false
+			} else {
+				status["overall"] = "degraded"
+				status["unavailable_models"] = unavail
+				status["total_models"] = len(auth.ModelStates)
+			}
+		}
+	}
+	if auth.Quota.Exceeded {
+		if status["overall"] == "healthy" {
+			status["overall"] = "degraded"
+		}
+		status["quota_limited"] = true
+	}
+	return status
+}
+
+func truncateStr(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
 }
 
 // Download single auth file by name
