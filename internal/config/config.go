@@ -369,6 +369,9 @@ type CloakConfig struct {
 // ClaudeKey represents the configuration for a Claude API key,
 // including the API key itself and an optional base URL for the API endpoint.
 type ClaudeKey struct {
+	// Name is an optional display name for this credential configuration.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
 	// APIKey is the authentication key for accessing Claude API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
@@ -409,6 +412,9 @@ func (k ClaudeKey) GetBaseURL() string { return k.BaseURL }
 
 // TraeKey represents the configuration for a Trae Gateway API key.
 type TraeKey struct {
+	// Name is an optional display name for this credential configuration.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
 	// APIKey is the Trae Gateway JWT token.
 	// When omitted and RefreshToken is set, the JWT will be automatically
 	// obtained via ExchangeToken.

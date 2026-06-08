@@ -302,6 +302,7 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 }
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
+		Name           *string               `json:"name"`
 		APIKey         *string               `json:"api-key"`
 		Prefix         *string               `json:"prefix"`
 		BaseURL        *string               `json:"base-url"`
@@ -338,6 +339,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.ClaudeKey[targetIndex]
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
 	}
@@ -1262,6 +1266,7 @@ func (h *Handler) PutTraeKeys(c *gin.Context) {
 }
 func (h *Handler) PatchTraeKey(c *gin.Context) {
 	type traeKeyPatch struct {
+		Name           *string             `json:"name"`
 		APIKey         *string             `json:"api-key"`
 		RefreshToken   *string             `json:"refresh-token"`
 		Prefix         *string             `json:"prefix"`
@@ -1299,6 +1304,9 @@ func (h *Handler) PatchTraeKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.TraeKey[targetIndex]
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
 	}

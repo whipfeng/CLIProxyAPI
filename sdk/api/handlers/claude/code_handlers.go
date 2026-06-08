@@ -76,9 +76,14 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 		return
 	}
 
-	// Check if the client requested a streaming response.
+	modelName := gjson.GetBytes(rawJSON, "model").String()
 	streamResult := gjson.GetBytes(rawJSON, "stream")
-	if !streamResult.Exists() || streamResult.Type == gjson.False {
+	isStream := streamResult.Exists() && streamResult.Type == gjson.True
+	msgCount := gjson.GetBytes(rawJSON, "messages.#").Int()
+	log.Infof("[Claude] incoming model=%s stream=%v messages=%d body=%dB", modelName, isStream, msgCount, len(rawJSON))
+
+	// Check if the client requested a streaming response.
+	if !isStream {
 		h.handleNonStreamingResponse(c, rawJSON)
 	} else {
 		h.handleStreamingResponse(c, rawJSON)

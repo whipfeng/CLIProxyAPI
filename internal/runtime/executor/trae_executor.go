@@ -539,12 +539,17 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		if gatewayFinishReason == "tool_calls" || len(toolCalls) > 0 {
 			stopReason = "tool_use"
 		}
+		var thinkingBlocks []traeAnthropicContentBlock
+		if reasoningContent.Len() > 0 {
+			thinkingBlocks = append(thinkingBlocks, traeAnthropicContentBlock{Type: "thinking", Thinking: reasoningContent.String(), Signature: ""})
+		}
 		out, _ := json.Marshal(traeAnthropicResponse{
 			ID:         fmt.Sprintf("msg_trae_%d", time.Now().UnixNano()),
 			Type:       "message",
 			Role:       "assistant",
 			Model:      req.Model,
 			Content:    anthropicContent,
+			Thinking:   thinkingBlocks,
 			StopReason: stopReason,
 			Usage:      traeAnthropicUsage{InputTokens: promptTokens, OutputTokens: completionTokens, CacheReadInputTokens: cacheReadTokens, CacheCreationInputTokens: cacheWriteTokens},
 		})
@@ -711,7 +716,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 						anthropicStarted = true
 						payload, _ := json.Marshal(map[string]any{
 							"type":    "message_start",
-							"message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}},
+							"message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "thinking": []any{}, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}},
 						})
 						sendChunk("message_start", payload)
 					}
@@ -748,7 +753,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 							anthropicStarted = true
 							payload, _ := json.Marshal(map[string]any{
 								"type":    "message_start",
-								"message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}},
+								"message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "thinking": []any{}, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}},
 							})
 							sendChunk("message_start", payload)
 						}
@@ -785,7 +790,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 							anthropicStarted = true
 							payload, _ := json.Marshal(map[string]any{
 								"type":    "message_start",
-								"message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}},
+								"message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "thinking": []any{}, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}},
 							})
 							sendChunk("message_start", payload)
 						}
@@ -1843,6 +1848,7 @@ type traeAnthropicResponse struct {
 	Role       string                      `json:"role"`
 	Model      string                      `json:"model"`
 	Content    []traeAnthropicContentBlock `json:"content"`
+	Thinking   []traeAnthropicContentBlock `json:"thinking"`
 	StopReason string                      `json:"stop_reason"`
 	Usage      traeAnthropicUsage          `json:"usage"`
 }
