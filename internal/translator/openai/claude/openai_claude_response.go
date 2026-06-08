@@ -149,7 +149,7 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 	if delta := root.Get("choices.0.delta"); delta.Exists() {
 		if !param.MessageStarted {
 			// Send message_start event
-			messageStartJSON := []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
+			messageStartJSON := []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"","content":[],"thinking":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
 			messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.id", param.MessageID)
 			messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.model", param.Model)
 			results = append(results, translatorcommon.AppendSSEEventBytes(nil, "message_start", messageStartJSON, 2))
@@ -170,7 +170,7 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 						param.ThinkingContentBlockIndex = param.NextContentBlockIndex
 						param.NextContentBlockIndex++
 					}
-					contentBlockStartJSON := `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`
+					contentBlockStartJSON := `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`
 					contentBlockStartJSONBytes := []byte(contentBlockStartJSON)
 					contentBlockStartJSONBytes, _ = sjson.SetBytes(contentBlockStartJSONBytes, "index", param.ThinkingContentBlockIndex)
 					results = append(results, translatorcommon.AppendSSEEventBytes(nil, "content_block_start", contentBlockStartJSONBytes, 2))
@@ -389,7 +389,7 @@ func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams)
 func convertOpenAINonStreamingToAnthropic(rawJSON []byte) [][]byte {
 	root := gjson.ParseBytes(rawJSON)
 
-	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
+	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"thinking":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
 	out, _ = sjson.SetBytes(out, "id", root.Get("id").String())
 	out, _ = sjson.SetBytes(out, "model", root.Get("model").String())
 
@@ -562,7 +562,7 @@ func ConvertOpenAIResponseToClaudeNonStream(_ context.Context, _ string, origina
 
 	root := gjson.ParseBytes(rawJSON)
 	toolNameMap := util.ToolNameMapFromClaudeRequest(originalRequestRawJSON)
-	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
+	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"thinking":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
 	out, _ = sjson.SetBytes(out, "id", root.Get("id").String())
 	out, _ = sjson.SetBytes(out, "model", root.Get("model").String())
 

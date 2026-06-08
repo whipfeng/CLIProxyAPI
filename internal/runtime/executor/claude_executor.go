@@ -160,6 +160,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 
+	// Non-Anthropic upstreams (e.g. Kimi, OpenAI-compatible) may reject
+	// Anthropic-specific fields like thinking.type="disabled". Strip the
+	// entire thinking block when targeting such APIs.
+	body = stripAnthropicOnlyFields(body, baseURL)
+
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
 	body = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
@@ -344,6 +349,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return nil, err
 	}
+
+	// Non-Anthropic upstreams (e.g. Kimi, OpenAI-compatible) may reject
+	// Anthropic-specific fields like thinking.type="disabled". Strip the
+	// entire thinking block when targeting such APIs.
+	body = stripAnthropicOnlyFields(body, baseURL)
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
@@ -1621,6 +1631,33 @@ func buildTextBlock(text string, cacheControl map[string]string) string {
 		block, _ = sjson.SetRawBytes(block, "cache_control", []byte(cc))
 	}
 	return string(block)
+}
+
+// stripAnthropicOnlyFields removes Anthropic-specific fields that non-Anthropic
+// upstreams (e.g. Kimi, OpenAI-compatible APIs) do not support. This prevents
+// 400 errors when the Claude executor proxies to such backends.
+//
+// Stripped fields:
+//   - thinking: when type="disabled" or "none" (non-Anthropic APIs don't understand it)
+//   - output_config: Anthropic-specific output configuration
+func stripAnthropicOnlyFields(payload []byte, baseURL string) []byte {
+	// Only strip for non-Anthropic upstreams
+	if baseURL == "" || strings.EqualFold(baseURL, "https://api.anthropic.com") || strings.EqualFold(baseURL, "api.anthropic.com") {
+		return payload
+	}
+
+	// Strip thinking block if it's disabled/none — non-Anthropic APIs reject this
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "thinking.type").String()))
+	if thinkingType == "disabled" || thinkingType == "none" {
+		payload, _ = sjson.DeleteBytes(payload, "thinking")
+	}
+
+	// Strip output_config (Anthropic-specific, e.g. effort level)
+	if gjson.GetBytes(payload, "output_config").Exists() {
+		payload, _ = sjson.DeleteBytes(payload, "output_config")
+	}
+
+	return payload
 }
 
 // stripBillingHeaderFromSystem removes x-anthropic-billing-header system blocks
