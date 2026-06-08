@@ -1640,12 +1640,10 @@ func buildTextBlock(text string, cacheControl map[string]string) string {
 // Stripped fields:
 //   - thinking: when type="disabled" or "none" (non-Anthropic APIs don't understand it)
 //   - output_config: Anthropic-specific output configuration
-func stripAnthropicOnlyFields(payload []byte, baseURL string) []byte {
-	// Only strip for non-Anthropic upstreams
-	if baseURL == "" || strings.EqualFold(baseURL, "https://api.anthropic.com") || strings.EqualFold(baseURL, "api.anthropic.com") {
-		return payload
-	}
-
+//
+// Note: we always strip disabled/none thinking unconditionally because the real
+// Anthropic API also accepts requests without a thinking field when it's disabled.
+func stripAnthropicOnlyFields(payload []byte, _ string) []byte {
 	// Strip thinking block if it's disabled/none — non-Anthropic APIs reject this
 	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "thinking.type").String()))
 	if thinkingType == "disabled" || thinkingType == "none" {
