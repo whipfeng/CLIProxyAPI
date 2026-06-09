@@ -1641,12 +1641,14 @@ func buildTextBlock(text string, cacheControl map[string]string) string {
 //   - thinking: when type="disabled" or "none" (non-Anthropic APIs don't understand it)
 //   - output_config: Anthropic-specific output configuration
 //
-// Note: we always strip disabled/none thinking unconditionally because the real
+// Note: we always strip disabled/none/empty thinking unconditionally because the real
 // Anthropic API also accepts requests without a thinking field when it's disabled.
 func stripAnthropicOnlyFields(payload []byte, _ string) []byte {
-	// Strip thinking block if it's disabled/none — non-Anthropic APIs reject this
+	// Strip thinking block if it's disabled, none, or empty — non-Anthropic APIs reject this
 	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "thinking.type").String()))
-	if thinkingType == "disabled" || thinkingType == "none" {
+	thinkingRaw := gjson.GetBytes(payload, "thinking").Raw
+	if thinkingType == "disabled" || thinkingType == "none" || thinkingType == "" ||
+		thinkingRaw == "{}" || thinkingRaw == "null" || thinkingRaw == `""` {
 		payload, _ = sjson.DeleteBytes(payload, "thinking")
 	}
 
