@@ -1640,6 +1640,8 @@ func buildTextBlock(text string, cacheControl map[string]string) string {
 // Stripped fields:
 //   - thinking: when type="disabled" or "none" (non-Anthropic APIs don't understand it)
 //   - output_config: Anthropic-specific output configuration
+//   - metadata: Anthropic-specific metadata (user_id etc.)
+//   - cache_control: prompt caching blocks in system/messages (non-Anthropic APIs reject this)
 //
 // Note: we always strip disabled/none/empty thinking unconditionally because the real
 // Anthropic API also accepts requests without a thinking field when it's disabled.
@@ -1657,6 +1659,73 @@ func stripAnthropicOnlyFields(payload []byte, _ string) []byte {
 		payload, _ = sjson.DeleteBytes(payload, "output_config")
 	}
 
+	// Strip metadata (Anthropic-specific, contains user_id etc.)
+	if gjson.GetBytes(payload, "metadata").Exists() {
+		payload, _ = sjson.DeleteBytes(payload, "metadata")
+	}
+
+	// Strip cache_control from all content blocks in system[] and messages[]
+	// Non-Anthropic APIs don't support prompt caching and will 400 on this field
+	payload = stripCacheControlBlocks(payload)
+
+	return payload
+}
+
+// stripCacheControlBlocks removes cache_control from all content blocks in system[]
+// and messages[]. Non-Anthropic APIs don't support prompt caching and will 400
+// on this field.
+func stripCacheControlBlocks(payload []byte) []byte {
+	// Process system array
+	if sys := gjson.GetBytes(payload, "system"); sys.IsArray() {
+		payload = stripCacheControlFromArray(payload, "system", sys)
+	}
+
+	// Process messages array
+	if msgs := gjson.GetBytes(payload, "messages"); msgs.IsArray() {
+		payload = stripCacheControlFromArray(payload, "messages", msgs)
+	}
+	return payload
+}
+
+func stripCacheControlFromArray(payload []byte, fieldPath string, arr gjson.Result) []byte {
+	var cleaned []string
+	arr.ForEach(func(_, item gjson.Result) bool {
+		content := item.Get("content")
+		if content.IsArray() {
+			var blocks []string
+			content.ForEach(func(_, block gjson.Result) bool {
+				raw := block.Raw
+				// Delete cache_control if present
+				if block.Get("cache_control").Exists() {
+					var err error
+					rawBytes, err := sjson.DeleteBytes([]byte(raw), "cache_control")
+					if err != nil {
+						// fallback to original on error
+					} else {
+						raw = string(rawBytes)
+					}
+				}
+				blocks = append(blocks, string(raw))
+				return true
+			})
+			result := "[" + strings.Join(blocks, ",") + "]"
+			itemRaw := item.Raw
+			// Replace content array inside the item JSON
+			replaced, err := sjson.SetRawBytes([]byte(itemRaw), "content", []byte(result))
+			if err != nil {
+				cleaned = append(cleaned, string(itemRaw))
+			} else {
+				cleaned = append(cleaned, string(replaced))
+			}
+		} else {
+			cleaned = append(cleaned, item.Raw)
+		}
+		return true
+	})
+	if len(cleaned) > 0 {
+		result := "[" + strings.Join(cleaned, ",") + "]"
+		payload, _ = sjson.SetRawBytes(payload, fieldPath, []byte(result))
+	}
 	return payload
 }
 
