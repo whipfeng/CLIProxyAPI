@@ -159,6 +159,10 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if err != nil {
 		return resp, err
 	}
+	log.Debugf("[ClaudeExecutor] after ApplyThinking: thinking.type=%s thinking.budget_tokens=%s output_config.effort=%s",
+		gjson.GetBytes(body, "thinking.type").String(),
+		gjson.GetBytes(body, "thinking.budget_tokens").String(),
+		gjson.GetBytes(body, "output_config.effort").String())
 
 	// Non-Anthropic upstreams (e.g. Kimi, OpenAI-compatible) may reject
 	// Anthropic-specific fields like thinking.type="disabled". Strip the
@@ -168,13 +172,24 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
 	body = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
+	log.Debugf("[ClaudeExecutor] after applyCloaking: thinking.type=%s thinking.budget_tokens=%s output_config.effort=%s",
+		gjson.GetBytes(body, "thinking.type").String(),
+		gjson.GetBytes(body, "thinking.budget_tokens").String(),
+		gjson.GetBytes(body, "output_config.effort").String())
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
+	log.Debugf("[ClaudeExecutor] after PayloadConfig: thinking.type=%s thinking.budget_tokens=%s output_config.effort=%s",
+		gjson.GetBytes(body, "thinking.type").String(),
+		gjson.GetBytes(body, "thinking.budget_tokens").String(),
+		gjson.GetBytes(body, "output_config.effort").String())
 	body = ensureModelMaxTokens(body, baseModel)
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
+	log.Debugf("[ClaudeExecutor] after disableThinkingIfToolChoice: thinking.type=%s tool_choice.type=%s",
+		gjson.GetBytes(body, "thinking.type").String(),
+		gjson.GetBytes(body, "tool_choice.type").String())
 	body = normalizeClaudeTemperatureForThinking(body)
 
 	// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
